@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -15,17 +16,35 @@ void nvsSave(const char *path);
 class Preferences {
 public:
   NvsStore &kv = nvs();
-  bool begin(const char *, bool = false) { return true; }
-  void end() {}
+  // MATCHES THE HARDWARE: a copied Preferences shares the nvs_handle_t, and
+  // ~Preferences() calls nvs_close() on it. So copying an OPEN Pet (`Pet tmp =
+  // pet;`) and letting the copy go out of scope kills the live pet's handle --
+  // every save after that silently fails. end() used to be a no-op here, which
+  // is why no test could see it. A closed handle reads defaults and drops writes.
+  int h = 0;
+  bool started = false;
+  static std::set<int> &closedSet() { static std::set<int> s; return s; }
+  static int &nextHandle() { static int n = 0; return n; }
+  bool dead() const { return h && closedSet().count(h); }
+  Preferences() = default;
+  Preferences(const Preferences &) = default;      // shares h, like the real one
+  Preferences &operator=(const Preferences &) = default;
+  ~Preferences() { end(); }
+  bool begin(const char *, bool = false) {
+    h = ++nextHandle(); started = true; return true;
+  }
+  void end() { if (started) { closedSet().insert(h); started = false; } }
   void clear() { kv.clear(); }
   bool isKey(const char *k) { return kv.count(k) != 0; }
 
   template <typename T> void putT(const char *k, T v) {
+    if (dead()) return;
     std::vector<uint8_t> b(sizeof(T));
     memcpy(b.data(), &v, sizeof(T));
     kv[k] = b;
   }
   template <typename T> T getT(const char *k, T d) {
+    if (dead()) return d;
     auto it = kv.find(k);
     if (it == kv.end() || it->second.size() != sizeof(T)) return d;
     T v; memcpy(&v, it->second.data(), sizeof(T)); return v;
@@ -43,6 +62,7 @@ public:
   void putUShort(const char *k, uint16_t v) { putT(k, v); }
   uint16_t getUShort(const char *k, uint16_t d = 0) { return getT(k, d); }
   void putBytes(const char *k, const void *p, size_t n) {
+    if (dead()) return;
     const uint8_t *b = (const uint8_t *)p;
     kv[k] = std::vector<uint8_t>(b, b + n);
   }
@@ -71,6 +91,7 @@ public:
     return it->second.size();
   }
   void putString(const char *k, const char *v) {
+    if (dead()) return;
     kv[k] = std::vector<uint8_t>(v, v + strlen(v) + 1);
   }
   size_t getString(const char *k, char *out, size_t n) {

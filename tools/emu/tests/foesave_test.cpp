@@ -63,6 +63,29 @@ int main(){
     Pet q; q.begin();
     ck(q.level() == 81, "an OPENED pet still saves normally (the guard is not too wide)");
   }
+  // COPYING the live pet must not kill its save. buildSquad() does
+  // `Pet tmp = pet;` to apply a level cap, and a copied Preferences shares the
+  // NVS handle: ~Preferences() closed it, so every save after the FIRST gym fight
+  // of a boot silently failed and the next reboot rolled the game back -- badges
+  // won that session simply vanished.
+  {
+    Pet p; p.begin();
+    p.winBadge(0, 0, false);
+    {
+      Pet tmp = p;                       // exactly what buildSquad() does
+      tmp.ageMinutes = 60UL*5;           // ...and its level cap
+      tmp.saveNow();                     // a copy must not write either
+    }
+    p.winBadge(0, 1, false);             // won AFTER the copy died
+    p.winBadge(1, 2, true);
+    p.ageMinutes = 60UL*90;
+    p.saveNow();
+    Pet q; q.begin();                    // the reboot
+    ck(q.hasBadge(0, 0, false) && q.hasBadge(0, 1, false),
+       "badges won after a Pet copy was made still reach NVS");
+    ck(q.hasBadge(1, 2, true), "...including a non-Kanto hard badge");
+    ck(q.level() == 91, "...and the live pet's other fields still save too");
+  }
   printf("%s\n", bad?"FAILURES":"all good");
   return bad?1:0;
 }

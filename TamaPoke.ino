@@ -2843,10 +2843,10 @@ void drawClockBtn(int x, int y, const char *l) {
 // they are tapped, so the other pages' OK/cancel simply close the screen.
 
 #define SET_OK_X 133
-#define SET_OK_Y 340
+#define SET_OK_Y 358
 #define SET_OK_W 200
 #define SET_OK_H 48
-#define SET_DOTS_Y 316
+#define SET_DOTS_Y 330
 
 // volume page geometry
 #define SND_SW_X 84              // sound master switch, left of centre
@@ -2871,10 +2871,10 @@ void drawClockBtn(int x, int y, const char *l) {
 
 // language page: a 2-column grid, one pill per language
 #define LANG_GRID_X 68
-#define LANG_GRID_Y 96
+#define LANG_GRID_Y 92
 #define LANG_CELL_W 160
-#define LANG_CELL_H 44
-#define LANG_CELL_GAP 6
+#define LANG_CELL_H 48
+#define LANG_CELL_GAP 8
 // the language's own name, which is never translated; ASCII except zh/ko,
 // whose glyphs come from cjkfont.h
 static const char *const LANG_NAMES[LANG_COUNT] = {
@@ -3042,7 +3042,7 @@ void renderClock() {
 
   gfx->setTextColor(UI_TRACK);
   gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_CLOCK_CANCEL)) * 6, 410);
+  gfx->setCursor(CX - cjkCols(T(S_CLOCK_CANCEL)) * 6, 420);
   gfx->print(T(S_CLOCK_CANCEL));
   gfx->flush();
 }
@@ -3577,6 +3577,7 @@ void startLinkBattle() {
 
 void startTrainerBattle(uint8_t idx, bool hard) {
   if (idx >= TRAINER_COUNT || pet.isEgg() || pet.ceremony != CER_NONE) return;
+  btlRegion = gymRegion;   // latch the ladder: the fight, badge and next foe must all read this one
   const Trainer &tr = TRAINERS[idx];
   uint8_t top = 0;
   for (int k = 0; k < tr.count; k++)

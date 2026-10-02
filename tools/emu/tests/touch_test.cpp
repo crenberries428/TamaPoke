@@ -44,6 +44,7 @@ extern uint8_t btlFoeAt, btlSquadN, btlSquadAt, btlMenu;
 extern Combatant btlSquad[7];
 extern int8_t btlSwapWho;
 extern bool btlHard;
+extern uint8_t gymRegion, btlRegion;
 extern bool gymOpen, gymHard; extern uint8_t gymPage;
 extern bool pickOpen, pickHard; extern uint8_t pickTrainer; extern uint16_t squadMask;
 uint8_t squadCap(uint8_t idx, bool hard);
@@ -332,6 +333,16 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 3; i++) { PartyMon m; m.dex = 9 + i * 20; m.level = 40;
     m.ivAtk = m.ivDef = m.ivSpe = m.ivHp = 25; party.replaceAt(i, m); }
   squadMask = 0xFFFF;
+  // The fight must read the ladder it STARTED from. btlRegion was never
+  // assigned, so a Johto fight showed Falkner's Pidgey, then Brock's Onix, and
+  // paid out Brock's badge.
+  gymRegion = 1;
+  startTrainerBattle(0, false);
+  if (btlRegion != 1) { printf("FAIL: btlRegion=%u after a Johto fight started (want 1)\n", btlRegion); return 1; }
+  gymRegion = 2;   // browsing another ladder mid-fight must not retarget it
+  if (btlRegion != 1) { printf("FAIL: btlRegion followed gymRegion\n"); return 1; }
+  printf("PASS: a Johto fight latches its own region\n");
+  battleOpen = false; gymRegion = 0;
   startTrainerBattle(0, false);
   if (btlSquadN < 2) { printf("FAIL: squad too small to test switching\n"); return 1; }
   printf("PASS: battle starts with a squad of %u\n", btlSquadN);

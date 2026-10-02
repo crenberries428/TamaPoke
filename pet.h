@@ -81,6 +81,26 @@ uint8_t regionOfDex(int16_t d);
 // REGION_COUNT, which would land on a locked region and silently do nothing.
 uint8_t nextAvailableRegion(uint8_t from);
 
+// A Pet is copied (buildSquad() does `Pet tmp = pet;` to apply a level cap), and
+// a plain Preferences copy SHARES the nvs_handle_t while ~Preferences() calls
+// nvs_close() on it. The copy going out of scope therefore closed the LIVE pet's
+// handle: every save after the first gym fight of a boot failed silently, and the
+// next reboot rolled the game back -- badges won that session vanished. A copy
+// gets an unopened store and a cleared `opened`, so it can read and never write.
+struct PetPrefs : Preferences {
+  PetPrefs() {}
+  PetPrefs(const PetPrefs &) : Preferences() {}
+  PetPrefs &operator=(const PetPrefs &) { return *this; }
+};
+struct PetOpened {
+  bool v = false;
+  PetOpened() {}
+  PetOpened(const PetOpened &) {}
+  PetOpened &operator=(const PetOpened &) { return *this; }
+  PetOpened &operator=(bool b) { v = b; return *this; }
+  operator bool() const { return v; }
+};
+
 class Pet {
 public:
   // Estadisticas 0..100
@@ -418,7 +438,7 @@ public:
   void saveNow();
 
 private:
-  Preferences prefs;
+  PetPrefs prefs;
   // A Pet that was never begin()'d MUST NOT WRITE. Nothing enforced that, and
   // the battle code builds its opponent as a throwaway Pet:
   //
@@ -433,7 +453,7 @@ private:
   //
   // The rule belongs here rather than at the call sites: every future throwaway
   // Pet is covered without anyone having to remember.
-  bool opened = false;
+  PetOpened opened;
   uint32_t lastTick = 0;
   uint32_t eatUntil = 0;
   uint32_t heartUntil = 0;
