@@ -172,6 +172,7 @@ void loop();
 void render();
 extern Arduino_Canvas *gfx;
 extern Pet pet;
+extern uint8_t settingsPage;
 extern bool cardOpen, galleryOpen, clockOpen, kbOpen, menuOpen, partyOpen, partyPick, trainOpen, movePickOpen;
 extern uint8_t cardPage;
 
@@ -246,6 +247,7 @@ static int shotMode(const char *screen, const char *out, int lvl, int iv, int de
     for (int d = 1; d <= 200; d++) pet.dbgHatchAs(d, false);
   }
   else if (!strcmp(screen, "clock"))   clockOpen = true;
+  else if (!strncmp(screen, "clock", 5) && screen[5] >= '0' && screen[5] <= '3') { clockOpen = true; settingsPage = (uint8_t)(screen[5] - '0'); }
   else if (!strcmp(screen, "menu"))    menuOpen = true;
   else if (!strcmp(screen, "train"))   trainOpen = true;
   else if (!strcmp(screen, "moves"))   { cardOpen = true; cardPage = 2; }

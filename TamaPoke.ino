@@ -150,6 +150,9 @@ char partyBannerName[14] = "";
 
 bool clockOpen = false;       // pantalla de ajuste de hora (deslizar abajo)
 int clockH = 12, clockM = 0;  // hora en edicion
+// settings pages, swiped left/right
+enum { SET_TIME, SET_VOLUME, SET_LANG, SET_ABOUT, SET_PAGES };
+uint8_t settingsPage = 0;
 
 // escena de bano: espuma sobre el bicho y limpieza al reventar
 uint32_t bathUntil = 0;
@@ -1596,7 +1599,12 @@ void onSwipe(int dir) {
   }
   if (gameOpen) { leaveGame(); return; }   // swipe out, keeping what you earned
   if (spdOpen) { leaveSpeed(); return; }
-  if (kbOpen || clockOpen) return;
+  if (kbOpen) return;
+  if (clockOpen) {   // settings: horizontal pages, clamped; OK/cancel close it
+    int p = (int)settingsPage + (dir > 0 ? -1 : 1);
+    if (p >= 0 && p < SET_PAGES) settingsPage = (uint8_t)p;
+    return;
+  }
   if (cardOpen) {  // dentro de la ficha: cambiar entre las 4 paginas
     int p = (int)cardPage + (dir > 0 ? -1 : 1);  // izquierda avanza
     cardPage = p < 0 ? 0 : (p > CARD_PAGES - 1 ? CARD_PAGES - 1 : p);
@@ -2767,6 +2775,7 @@ void openClock() {
   uint32_t e = pet.lastSeenEpoch ? pet.lastSeenEpoch : rtcEpoch();
   clockH = (e / 3600) % 24;
   clockM = (e / 60) % 60;
+  settingsPage = SET_TIME;
   clockOpen = true;
 }
 
@@ -2787,140 +2796,192 @@ void drawClockBtn(int x, int y, const char *l) {
   gfx->print(l);
 }
 
-// pildoras de idioma centradas en y; rellena la activa
-#define LANG_PILL_Y 296
-#define LANG_PILL_H 30
-#define LANG_PILL_X 336          // pildora de idioma (cicla los 6 al tocar)
-#define LANG_PILL_W 96
-// the volume mixer sits in the gap between the sound switch and the language
-// pill: minus, the level, plus
-#define VOL_MINUS_X 146
-#define VOL_PLUS_X 276
-#define VOL_BTN_W 48
-static const char *const LANG_CODES[LANG_COUNT] = { "ES", "EN", "FR", "DE", "IT", "PT" };
+// ---------- settings: four pages, swiped left/right ----------
+// TIME / VOLUME / LANGUAGE / ABOUT. Only the time page has anything to
+// confirm (OK applies the clock); sound and language take effect as soon as
+// they are tapped, so the other pages' OK/cancel simply close the screen.
+
+#define SET_OK_X 133
+#define SET_OK_Y 340
+#define SET_OK_W 200
+#define SET_OK_H 48
+#define SET_DOTS_Y 316
+
+// volume page geometry
+#define SND_SW_X 153             // sound master switch, centred
+#define SND_SW_Y 130
+#define SND_SW_W 160
+#define SND_SW_H 52
+#define VOL_ROW_Y 214
+#define VOL_MINUS_X 96
+#define VOL_PLUS_X 310
+#define VOL_BTN_W 60
+#define VOL_BTN_H 60
+#define VOL_BAR_X 176
+#define VOL_BAR_W 114
+
+// language page: a 2 x 3 grid, one pill per language
+#define LANG_GRID_X 68
+#define LANG_GRID_Y 108
+#define LANG_CELL_W 160
+#define LANG_CELL_H 58
+#define LANG_CELL_GAP 10
+// the language's own name, which is never translated; unaccented like every
+// other firmware string
+static const char *const LANG_NAMES[LANG_COUNT] = {
+  "Espanol", "English", "Francais", "Deutsch", "Italiano", "Portugues" };
+
+static void langCell(int i, int &x, int &y) {
+  x = LANG_GRID_X + (i % 2) * (LANG_CELL_W + LANG_CELL_GAP);
+  y = LANG_GRID_Y + (i / 2) * (LANG_CELL_H + LANG_CELL_GAP);
+}
+
+static void settingsTitle(const char *s) {
+  gfx->setTextColor(UI_INK);
+  gfx->setTextSize(3);
+  gfx->setCursor(CX - (int)strlen(s) * 9, 44);
+  gfx->print(s);
+}
 
 void renderClock() {
   gfx->fillScreen(RGB565_BLACK);
   gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - strlen(T(S_SET_TIME)) * 9, 44);
-  gfx->print(T(S_SET_TIME));
 
-  char t[8];
-  snprintf(t, sizeof(t), "%02d:%02d", clockH, clockM);
-  gfx->setTextSize(7);
-  gfx->setCursor(CX - 105, 108);
-  gfx->print(t);
+  if (settingsPage == SET_TIME) {
+    settingsTitle(T(S_SET_TIME));
+    char t[8];
+    snprintf(t, sizeof(t), "%02d:%02d", clockH, clockM);
+    gfx->setTextSize(7);
+    gfx->setCursor(CX - 105, 108);
+    gfx->print(t);
 
-  drawClockBtn(104, 190, "-");  // hora -
-  drawClockBtn(170, 190, "+");  // hora +
-  drawClockBtn(252, 190, "-");  // min -
-  drawClockBtn(318, 190, "+");  // min +
-  gfx->setTextSize(2);
-  gfx->setTextColor(UI_TRACK);
-  gfx->setCursor(120, 256);
-  gfx->print(T(S_HOUR));
-  gfx->setCursor(276, 256);
-  gfx->print(T(S_MIN));
+    drawClockBtn(104, 190, "-");  // hora -
+    drawClockBtn(170, 190, "+");  // hora +
+    drawClockBtn(252, 190, "-");  // min -
+    drawClockBtn(318, 190, "+");  // min +
+    gfx->setTextSize(2);
+    gfx->setTextColor(UI_TRACK);
+    gfx->setCursor(120, 256);
+    gfx->print(T(S_HOUR));
+    gfx->setCursor(276, 256);
+    gfx->print(T(S_MIN));
+  } else if (settingsPage == SET_VOLUME) {
+    settingsTitle(T(S_SET_VOLUME));
+    // the switch is the master; the level below is how loud it is when on,
+    // and 0 is silent without turning the system off
+    bool snd = audioEnabled();
+    const char *sl = snd ? T(S_SND_ON) : T(S_SND_OFF);
+    gfx->fillRoundRect(SND_SW_X, SND_SW_Y, SND_SW_W, SND_SW_H, 12, snd ? UI_BAR_OK : UI_WHITE);
+    gfx->drawRoundRect(SND_SW_X, SND_SW_Y, SND_SW_W, SND_SW_H, 12, UI_INK);
+    gfx->setTextColor(snd ? UI_BG_DAY : UI_INK);
+    gfx->setTextSize(3);
+    gfx->setCursor(SND_SW_X + (SND_SW_W - (int)strlen(sl) * 18) / 2, SND_SW_Y + 15);
+    gfx->print(sl);
 
-  // interruptor de sonido (izquierda de la fila de idioma)
-  bool snd = audioEnabled();
-  const char *sl = snd ? T(S_SND_ON) : T(S_SND_OFF);
-  gfx->fillRoundRect(34, LANG_PILL_Y, 96, LANG_PILL_H, 8, snd ? UI_BAR_OK : UI_WHITE);
-  gfx->drawRoundRect(34, LANG_PILL_Y, 96, LANG_PILL_H, 8, UI_INK);
-  gfx->setTextColor(snd ? UI_BG_DAY : UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(34 + (96 - (int)strlen(sl) * 12) / 2, LANG_PILL_Y + 8);
-  gfx->print(sl);
-
-  // volume: a level, not a toggle. The sound switch beside it is still the
-  // master -- this is how loud it is when it is on, and 0 is silent.
-  {
     uint8_t v = audioVolume();
     for (int i = 0; i < 2; i++) {
       int bx = i ? VOL_PLUS_X : VOL_MINUS_X;
       bool live = i ? (v < 10) : (v > 0);
-      gfx->fillRoundRect(bx, LANG_PILL_Y, VOL_BTN_W, LANG_PILL_H, 8,
-                         live ? UI_WHITE : UI_TRACK);
-      gfx->drawRoundRect(bx, LANG_PILL_Y, VOL_BTN_W, LANG_PILL_H, 8, UI_INK);
+      gfx->fillRoundRect(bx, VOL_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, live ? UI_WHITE : UI_TRACK);
+      gfx->drawRoundRect(bx, VOL_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, UI_INK);
       gfx->setTextColor(live ? UI_INK : 0x8410);
-      gfx->setTextSize(2);
-      gfx->setCursor(bx + VOL_BTN_W / 2 - 6, LANG_PILL_Y + 8);
+      gfx->setTextSize(4);
+      gfx->setCursor(bx + VOL_BTN_W / 2 - 12, VOL_ROW_Y + 17);
       gfx->print(i ? "+" : "-");
     }
     char vl[12];
     snprintf(vl, sizeof(vl), T(S_VOL_FMT), v);
     gfx->setTextColor(v ? UI_INK : UI_TRACK);
-    gfx->setTextSize(1);
-    gfx->setCursor(210 + (56 - (int)strlen(vl) * 6) / 2, LANG_PILL_Y + 4);
+    gfx->setTextSize(2);
+    gfx->setCursor(VOL_BAR_X + (VOL_BAR_W - (int)strlen(vl) * 12) / 2, VOL_ROW_Y + 10);
     gfx->print(vl);
-    // a small bar under the number, so the level reads at a glance
-    gfx->fillRoundRect(210, LANG_PILL_Y + 18, 56, 8, 3, UI_TRACK);
-    if (v) gfx->fillRoundRect(210, LANG_PILL_Y + 18, 56 * v / 10, 8, 3, UI_BAR_OK);
+    gfx->fillRoundRect(VOL_BAR_X, VOL_ROW_Y + 36, VOL_BAR_W, 12, 4, UI_TRACK);
+    if (v) gfx->fillRoundRect(VOL_BAR_X, VOL_ROW_Y + 36, VOL_BAR_W * v / 10, 12, 4, UI_BAR_OK);
+  } else if (settingsPage == SET_LANG) {
+    settingsTitle(T(S_SET_LANG));
+    for (int i = 0; i < LANG_COUNT; i++) {
+      int x, y;
+      langCell(i, x, y);
+      bool on = (i == (int)gLang);
+      gfx->fillRoundRect(x, y, LANG_CELL_W, LANG_CELL_H, 12, on ? UI_BAR_OK : UI_WHITE);
+      gfx->drawRoundRect(x, y, LANG_CELL_W, LANG_CELL_H, 12, UI_INK);
+      gfx->setTextColor(on ? UI_BG_DAY : UI_INK);
+      gfx->setTextSize(2);
+      gfx->setCursor(x + (LANG_CELL_W - (int)strlen(LANG_NAMES[i]) * 12) / 2,
+                     y + LANG_CELL_H / 2 - 8);
+      gfx->print(LANG_NAMES[i]);
+    }
+  } else {
+    settingsTitle(T(S_ABOUT));
+    gfx->setTextColor(UI_INK);
+    gfx->setTextSize(4);
+    gfx->setCursor(CX - 96, 140);   // "TamaPoke": 8 chars at 24 px
+    gfx->print("TamaPoke");
+    char ver[16];
+    snprintf(ver, sizeof(ver), "v%s", FW_VERSION);
+    gfx->setTextSize(3);
+    gfx->setCursor(CX - (int)strlen(ver) * 9, 200);
+    gfx->print(ver);
   }
 
-  // selector de idioma: una pildora que cicla los 6 idiomas al tocar
-  gfx->fillRoundRect(LANG_PILL_X, LANG_PILL_Y, LANG_PILL_W, LANG_PILL_H, 8, UI_WHITE);
-  gfx->drawRoundRect(LANG_PILL_X, LANG_PILL_Y, LANG_PILL_W, LANG_PILL_H, 8, UI_INK);
-  char lp[10];
-  snprintf(lp, sizeof(lp), "%s >", LANG_CODES[gLang]);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(LANG_PILL_X + (LANG_PILL_W - (int)strlen(lp) * 12) / 2, LANG_PILL_Y + 8);
-  gfx->print(lp);
+  // page dots, like the player card's
+  for (uint8_t i = 0; i < SET_PAGES; i++) {
+    int dx = CX - (SET_PAGES - 1) * 13 + i * 26;
+    if (i == settingsPage) gfx->fillCircle(dx, SET_DOTS_Y, 5, UI_INK);
+    else gfx->drawCircle(dx, SET_DOTS_Y, 4, UI_INK);
+  }
 
-  gfx->fillRoundRect(133, 340, 200, 48, 14, UI_BAR_OK);
+  gfx->fillRoundRect(SET_OK_X, SET_OK_Y, SET_OK_W, SET_OK_H, 14, UI_BAR_OK);
   gfx->setTextColor(UI_BG_DAY);
   gfx->setTextSize(3);
-  gfx->setCursor(CX - 18, 352);
+  gfx->setCursor(CX - 18, SET_OK_Y + 12);
   gfx->print("OK");
 
   gfx->setTextColor(UI_TRACK);
   gfx->setTextSize(2);
   gfx->setCursor(CX - strlen(T(S_CLOCK_CANCEL)) * 6, 410);
   gfx->print(T(S_CLOCK_CANCEL));
-
-  // version del firmware (discreta, abajo del todo)
-  char ver[20];
-  snprintf(ver, sizeof(ver), "TamaPoke v%s", FW_VERSION);
-  gfx->setTextSize(1);
-  gfx->setCursor(CX - (int)strlen(ver) * 3, 436);
-  gfx->print(ver);
   gfx->flush();
 }
 
 void clockTap(int16_t x, int16_t y) {
-  if (y >= 190 && y <= 248) {  // fila de botones +/-
-    if (x >= 104 && x < 162) clockH = (clockH + 23) % 24;
-    else if (x >= 170 && x < 228) clockH = (clockH + 1) % 24;
-    else if (x >= 252 && x < 310) clockM = (clockM + 59) % 60;
-    else if (x >= 318 && x < 376) clockM = (clockM + 1) % 60;
+  // OK is on every page; only the time page has something to apply
+  if (y >= SET_OK_Y && y <= SET_OK_Y + SET_OK_H && x >= SET_OK_X && x <= SET_OK_X + SET_OK_W) {
+    if (settingsPage == SET_TIME) applyClock();
+    else clockOpen = false;
     return;
   }
-  if (y >= LANG_PILL_Y && y <= LANG_PILL_Y + LANG_PILL_H) {
-    if (x >= 34 && x < 130) {                  // interruptor de sonido
+  if (settingsPage == SET_TIME) {
+    if (y >= 190 && y <= 248) {  // fila de botones +/-
+      if (x >= 104 && x < 162) clockH = (clockH + 23) % 24;
+      else if (x >= 170 && x < 228) clockH = (clockH + 1) % 24;
+      else if (x >= 252 && x < 310) clockM = (clockM + 59) % 60;
+      else if (x >= 318 && x < 376) clockM = (clockM + 1) % 60;
+    }
+  } else if (settingsPage == SET_VOLUME) {
+    if (y >= SND_SW_Y && y < SND_SW_Y + SND_SW_H && x >= SND_SW_X && x < SND_SW_X + SND_SW_W) {
       audioSetEnabled(!audioEnabled());
       if (audioEnabled()) sfxPlay(SFX_TAP);    // confirma al encender
-      return;
+    } else if (y >= VOL_ROW_Y && y < VOL_ROW_Y + VOL_BTN_H) {
+      if (x >= VOL_MINUS_X && x < VOL_MINUS_X + VOL_BTN_W) {
+        if (audioVolume() > 0) audioSetVolume(audioVolume() - 1);
+        sfxPlay(SFX_TAP);                      // so the new level is audible
+      } else if (x >= VOL_PLUS_X && x < VOL_PLUS_X + VOL_BTN_W) {
+        if (audioVolume() < 10) audioSetVolume(audioVolume() + 1);
+        sfxPlay(SFX_TAP);
+      }
     }
-    if (x >= VOL_MINUS_X && x < VOL_MINUS_X + VOL_BTN_W) {
-      if (audioVolume() > 0) audioSetVolume(audioVolume() - 1);
-      sfxPlay(SFX_TAP);                        // so the new level is audible
-      return;
-    }
-    if (x >= VOL_PLUS_X && x < VOL_PLUS_X + VOL_BTN_W) {
-      if (audioVolume() < 10) audioSetVolume(audioVolume() + 1);
-      sfxPlay(SFX_TAP);
-      return;
-    }
-    if (x >= LANG_PILL_X && x < LANG_PILL_X + LANG_PILL_W) {  // cicla idioma
-      setLang((Lang)((gLang + 1) % LANG_COUNT));
-      sfxPlay(SFX_TAP);
-      return;
+  } else if (settingsPage == SET_LANG) {
+    for (int i = 0; i < LANG_COUNT; i++) {
+      int cx, cy;
+      langCell(i, cx, cy);
+      if (x >= cx && x < cx + LANG_CELL_W && y >= cy && y < cy + LANG_CELL_H) {
+        setLang((Lang)i);
+        sfxPlay(SFX_TAP);
+        return;
+      }
     }
   }
-  if (y >= 340 && y <= 388 && x >= 133 && x <= 333) { applyClock(); return; }
 }
 
 // llama + numero de racha arriba a la izquierda

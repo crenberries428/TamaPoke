@@ -22,6 +22,7 @@ extern uint8_t cardPage, gymPage, playerPage, movePickPage, boxPage, pickPage, p
 extern int galleryPage; extern bool galleryDirty; extern uint8_t galleryDetail;
 extern uint8_t galleryRegion;
 extern uint8_t gymRegion;
+extern uint8_t settingsPage;
 extern bool gymPick, galleryPick;
 extern uint8_t movePickSlot, movePickParty, boxSel, boxSwapFrom;
 extern uint16_t squadMask;
@@ -72,6 +73,19 @@ int main(){
   clearAll(); gymOpen=true; gymPick=false;        check("gyms",     &gymOpen,      &gymPage);
   clearAll(); playerOpen=true;                    check("player",   &playerOpen,   &playerPage);
   clearAll(); partyOpen=true; boxOpen=true;       check("box",      &boxOpen,      &boxPage);
+  clearAll(); clockOpen=true;                     check("settings", &clockOpen,    &settingsPage);
+  {
+    // pages are clamped, not wrapped: swiping on past the last page stays on it
+    // and swiping back returns to the first, and the screen never closes
+    clearAll(); clockOpen=true; settingsPage=0;
+    int n=1;
+    for (int i=0;i<12;i++){ uint8_t b=settingsPage; onSwipe(-1); if (settingsPage!=b) n=settingsPage+1; }
+    if (!clockOpen || n<4) { printf("FAIL  settings   walked %d pages (open=%d), want >= 4\n", n, clockOpen); bad++; }
+    else printf("PASS  settings   walks %d pages and clamps at the end\n", n);
+    for (int i=0;i<12;i++) onSwipe(1);
+    if (!clockOpen || settingsPage!=0) { printf("FAIL  settings   swipe back did not clamp at page 0 (%u)\n", settingsPage); bad++; }
+    else printf("PASS  settings   swipe back clamps at page 0\n");
+  }
   clearAll(); movePickOpen=true; movePickParty=0; movePickSlot=0;
                                                   check("movepick", &movePickOpen, &movePickPage);
   clearAll(); pickTrainer=7; pickHard=false; pickDefault(squadCap(7,false)); pickOpen=true;

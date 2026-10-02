@@ -20,6 +20,7 @@ uint8_t uiCurrentScreen();
 extern const char *const SCREEN_NAME[];
 extern Arduino_Canvas *gfx;
 extern Pet pet;
+extern uint8_t settingsPage;
 extern bool cardOpen, galleryOpen, clockOpen, kbOpen, menuOpen, partyOpen, partyPick;
 extern bool trainOpen, movePickOpen, battleOpen, gymOpen, playerOpen;
 extern uint8_t cardPage;
@@ -68,7 +69,8 @@ int main(){
   clearAll(); playerOpen=true;   check("player");
   clearAll(); menuOpen=true;     check("menu");
   clearAll(); partyOpen=true;    check("party");
-  clearAll(); clockOpen=true;    check("clock");
+  for (uint8_t p=0;p<4;p++){ clearAll(); clockOpen=true; settingsPage=p;
+    char n[16]; snprintf(n,sizeof(n),"settings%u",p); check(n); }
   for (uint8_t p=0;p<4;p++){ clearAll(); cardOpen=true; cardPage=p;
     char n[16]; snprintf(n,sizeof(n),"card%u",p); check(n); }
   clearAll(); startBattle(9,50); check("battle");
