@@ -39,7 +39,7 @@ static void run(GbSynth &syn, std::vector<int16_t> &out, uint32_t ms) {
   size_t n = (size_t)((uint64_t)ms * GB_RATE / 1000);
   size_t at = out.size();
   out.resize(at + n);
-  syn.render(out.data() + at, n, 8);
+  syn.render(out.data() + at, n, 80);
 }
 
 // A note in the Game Boy's own frequency units, so this reads like the data in

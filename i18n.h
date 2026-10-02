@@ -132,6 +132,7 @@ enum StrId : uint8_t {
   S_RETIRE_GONE,    // retire confirm: an early retire is not banked either
   S_SET_VOLUME, S_SET_LANG, S_ABOUT,   // settings page titles
   S_SET_BRIGHT,     // settings page title
+  S_TEST,           // volume page: play a beep at the chosen level
   STR_COUNT
 };
 

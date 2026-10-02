@@ -22,7 +22,7 @@ static void ck(bool ok,const char*w){printf("%s  %s\n",ok?"PASS":"FAIL",w); if(!
 static double dutyOf(uint16_t freq, uint8_t duty){
   GbSynth s; s.note(0, freq, duty, 15, 0, 0, 200);
   std::vector<int16_t> buf(GB_RATE / 5);
-  s.render(buf.data(), buf.size(), 10);
+  s.render(buf.data(), buf.size(), 100);
   size_t hi = 0;
   for (int16_t v : buf) if (v > 0) hi++;
   return (double)hi / buf.size();
@@ -46,7 +46,7 @@ int main(){
     // count zero crossings to confirm the pitch really is what was asked for
     GbSynth s; s.note(0, 1750, 2, 15, 0, 0, 1000);
     std::vector<int16_t> buf(GB_RATE);
-    s.render(buf.data(), buf.size(), 10);
+    s.render(buf.data(), buf.size(), 100);
     int cross = 0;
     for (size_t i = 1; i < buf.size(); i++)
       if (buf[i-1] <= 0 && buf[i] > 0) cross++;
@@ -59,7 +59,7 @@ int main(){
   {
     GbSynth s; s.note(0, 1500, 2, 15, -1, 1, 500);
     std::vector<int16_t> buf(GB_RATE / 2);
-    s.render(buf.data(), buf.size(), 10);
+    s.render(buf.data(), buf.size(), 100);
     auto peak = [&](size_t a, size_t b){ int16_t m = 0;
       for (size_t i = a; i < b && i < buf.size(); i++) if (abs(buf[i]) > m) m = abs(buf[i]);
       return m; };
@@ -71,7 +71,7 @@ int main(){
   {
     GbSynth s; s.note(0, 1500, 2, 15, 0, 0, 300);
     std::vector<int16_t> buf(GB_RATE / 4);
-    s.render(buf.data(), buf.size(), 10);
+    s.render(buf.data(), buf.size(), 100);
     int16_t a = 0, b = 0;
     for (size_t i = 0; i < 500; i++) if (abs(buf[i]) > a) a = abs(buf[i]);
     for (size_t i = 3000; i < 3500; i++) if (abs(buf[i]) > b) b = abs(buf[i]);
@@ -84,11 +84,11 @@ int main(){
     s.note(0, 1750, 2, 15, 0, 0, 300);
     s.note(1, 1200, 2, 15, 0, 0, 300);
     std::vector<int16_t> both(2000);
-    s.render(both.data(), both.size(), 10);
+    s.render(both.data(), both.size(), 100);
     GbSynth one;
     one.note(0, 1750, 2, 15, 0, 0, 300);
     std::vector<int16_t> solo(2000);
-    one.render(solo.data(), solo.size(), 10);
+    one.render(solo.data(), solo.size(), 100);
     int diff = 0;
     for (size_t i = 0; i < both.size(); i++) if (both[i] != solo[i]) diff++;
     ck(diff > 200, "two voices sound together, not one after the other");
@@ -101,7 +101,7 @@ int main(){
   {
     GbSynth s; s.noise(15, 0, 0, 300, 4);
     std::vector<int16_t> buf(4000);
-    s.render(buf.data(), buf.size(), 10);
+    s.render(buf.data(), buf.size(), 100);
     int cross = 0;
     for (size_t i = 1; i < buf.size(); i++)
       if ((buf[i-1] > 0) != (buf[i] > 0)) cross++;
@@ -123,10 +123,10 @@ int main(){
 
   // --- a finished note stops
   {
-    GbSynth s; s.note(0, 1500, 2, 15, 0, 0, 10);
+    GbSynth s; s.note(0, 1500, 2, 15, 0, 0, 100);
     ck(s.busy(), "a playing note reports busy");
     std::vector<int16_t> buf(GB_RATE / 10);
-    s.render(buf.data(), buf.size(), 10);
+    s.render(buf.data(), buf.size(), 100);
     ck(!s.busy(), "and stops when it is over");
   }
 

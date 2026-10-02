@@ -637,6 +637,7 @@ uint32_t lastRender = 0;
 uint32_t lastInteract = 0;
 uint8_t dimStage = 0;        // 0 despierto, 1 atenuado (90s), 2 casi apagado (5min)
 bool swallowGesture = false; // el toque que despierta no acciona nada
+bool sliderDrag = false;     // this touch began on the volume slider
 uint32_t holdStart = 0;     // pulsacion larga sobre el bicho
 uint32_t confirmUntil = 0;  // dialogo "soltar?" activo hasta este millis
 uint8_t choiceKind = 0;     // dialogo de decision: 0 ninguno, 1 evolucion, 2 despedida
@@ -1160,12 +1161,15 @@ void handleTouch() {
     tStart = millis();
     holdFired = false;
     swallowGesture = (dimStage > 0) || screenOff;  // si estaba a oscuras, solo despierta
+    sliderDrag = !swallowGesture && clockSliderHit(x, y);
+    if (sliderDrag) { swallowGesture = true; clockSliderSet(x); }
     if (screenOff) pet.setScreenOff(false);        // waking the screen wakes it
     screenOff = false;
     lastInteract = millis();
   } else if (pressed) {  // sigue apoyado
     tXl = x;
     tYl = y;
+    if (sliderDrag) clockSliderSet(x);
     // pulsacion larga sin moverse sobre el bicho -> dialogo de soltar
     //
     // Gated on the MAIN screen, not on a hand-maintained list of screens to
@@ -1185,6 +1189,11 @@ void handleTouch() {
     }
   } else if (wasPressed) {  // levanta el dedo: resolver gesto
     lastInteract = millis();
+    if (sliderDrag) {                    // save once, not on every pixel of the drag
+      sliderDrag = false;
+      audioSaveVolume();
+      sfxPlay(SFX_TAP);                  // hear the level you landed on
+    }
     int dx = tXl - tX0, dy = tYl - tY0;
     uint32_t dt = millis() - tStart;
     if (!holdFired && !swallowGesture) {
@@ -2819,11 +2828,18 @@ void drawClockBtn(int x, int y, const char *l) {
 #define SET_DOTS_Y 316
 
 // volume page geometry
-#define SND_SW_X 153             // sound master switch, centred
+#define SND_SW_X 84              // sound master switch, left of centre
 #define SND_SW_Y 130
-#define SND_SW_W 160
+#define SND_SW_W 140
 #define SND_SW_H 52
+#define SND_TEST_X 242           // TEST: beep at the chosen level, right of it
 #define VOL_ROW_Y 214
+#define VOLS_MINUS_X 36          // volume row: buttons pushed out, bar longer
+#define VOLS_PLUS_X 370
+#define VOLS_BAR_X 110
+#define VOLS_BAR_W 246
+#define VOLS_BAR_H 24
+#define VOL_STEP 5
 #define VOL_MINUS_X 96
 #define VOL_PLUS_X 310
 #define VOL_BTN_W 60
@@ -2890,10 +2906,18 @@ void renderClock() {
     gfx->setCursor(SND_SW_X + (SND_SW_W - (int)strlen(sl) * 18) / 2, SND_SW_Y + 15);
     gfx->print(sl);
 
+    // TEST needs the sound on; at volume 0 it is allowed and simply silent
+    gfx->fillRoundRect(SND_TEST_X, SND_SW_Y, SND_SW_W, SND_SW_H, 12, snd ? UI_WHITE : UI_TRACK);
+    gfx->drawRoundRect(SND_TEST_X, SND_SW_Y, SND_SW_W, SND_SW_H, 12, UI_INK);
+    gfx->setTextColor(snd ? UI_INK : 0x8410);
+    gfx->setTextSize(3);
+    gfx->setCursor(SND_TEST_X + (SND_SW_W - (int)strlen(T(S_TEST)) * 18) / 2, SND_SW_Y + 15);
+    gfx->print(T(S_TEST));
+
     uint8_t v = audioVolume();
     for (int i = 0; i < 2; i++) {
-      int bx = i ? VOL_PLUS_X : VOL_MINUS_X;
-      bool live = i ? (v < 10) : (v > 0);
+      int bx = i ? VOLS_PLUS_X : VOLS_MINUS_X;
+      bool live = i ? (v < 100) : (v > 0);
       gfx->fillRoundRect(bx, VOL_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, live ? UI_WHITE : UI_TRACK);
       gfx->drawRoundRect(bx, VOL_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, UI_INK);
       gfx->setTextColor(live ? UI_INK : 0x8410);
@@ -2901,14 +2925,18 @@ void renderClock() {
       gfx->setCursor(bx + VOL_BTN_W / 2 - 12, VOL_ROW_Y + 17);
       gfx->print(i ? "+" : "-");
     }
-    char vl[12];
+    char vl[16];
     snprintf(vl, sizeof(vl), T(S_VOL_FMT), v);
     gfx->setTextColor(v ? UI_INK : UI_TRACK);
     gfx->setTextSize(2);
-    gfx->setCursor(VOL_BAR_X + (VOL_BAR_W - (int)strlen(vl) * 12) / 2, VOL_ROW_Y + 10);
+    gfx->setCursor(VOLS_BAR_X + (VOLS_BAR_W - (int)strlen(vl) * 12) / 2, VOL_ROW_Y + 4);
     gfx->print(vl);
-    gfx->fillRoundRect(VOL_BAR_X, VOL_ROW_Y + 36, VOL_BAR_W, 12, 4, UI_TRACK);
-    if (v) gfx->fillRoundRect(VOL_BAR_X, VOL_ROW_Y + 36, VOL_BAR_W * v / 10, 12, 4, UI_BAR_OK);
+    int by = VOL_ROW_Y + 28;
+    gfx->fillRoundRect(VOLS_BAR_X, by, VOLS_BAR_W, VOLS_BAR_H, 8, UI_TRACK);
+    int fw = VOLS_BAR_W * v / 100;
+    if (fw >= 8) gfx->fillRoundRect(VOLS_BAR_X, by, fw, VOLS_BAR_H, 8, UI_BAR_OK);
+    gfx->fillCircle(VOLS_BAR_X + fw, by + VOLS_BAR_H / 2, 15, UI_WHITE);   // the knob
+    gfx->drawCircle(VOLS_BAR_X + fw, by + VOLS_BAR_H / 2, 15, UI_INK);
   } else if (settingsPage == SET_BRIGHT) {
     settingsTitle(T(S_SET_BRIGHT));
     for (int i = 0; i < 2; i++) {
@@ -2976,6 +3004,21 @@ void renderClock() {
   gfx->flush();
 }
 
+// The volume bar is a slider: touching it sets the level from x, and dragging
+// follows the finger. handleTouch keeps a gesture that began on it away from the
+// swipe/tap resolver, or a horizontal drag would page the settings screen.
+bool clockSliderHit(int16_t x, int16_t y) {
+  return clockOpen && settingsPage == SET_VOLUME && y >= VOL_ROW_Y + 20 && y < VOL_ROW_Y + VOL_BTN_H &&
+         x >= VOLS_BAR_X - 16 && x <= VOLS_BAR_X + VOLS_BAR_W + 16;
+}
+
+void clockSliderSet(int16_t x) {
+  int v = ((int)x - VOLS_BAR_X) * 100 / VOLS_BAR_W;
+  if (v < 0) v = 0;
+  if (v > 100) v = 100;
+  audioSetVolume((uint8_t)v);
+}
+
 void clockTap(int16_t x, int16_t y) {
   // OK is on every page; only the time page has something to apply
   if (y >= SET_OK_Y && y <= SET_OK_Y + SET_OK_H && x >= SET_OK_X && x <= SET_OK_X + SET_OK_W) {
@@ -2994,14 +3037,18 @@ void clockTap(int16_t x, int16_t y) {
     if (y >= SND_SW_Y && y < SND_SW_Y + SND_SW_H && x >= SND_SW_X && x < SND_SW_X + SND_SW_W) {
       audioSetEnabled(!audioEnabled());
       if (audioEnabled()) sfxPlay(SFX_TAP);    // confirma al encender
+    } else if (y >= SND_SW_Y && y < SND_SW_Y + SND_SW_H && x >= SND_TEST_X && x < SND_TEST_X + SND_SW_W) {
+      if (audioEnabled()) sfxPlay(SFX_HATCH);  // the same cue as the serial BEEP
     } else if (y >= VOL_ROW_Y && y < VOL_ROW_Y + VOL_BTN_H) {
-      if (x >= VOL_MINUS_X && x < VOL_MINUS_X + VOL_BTN_W) {
-        if (audioVolume() > 0) audioSetVolume(audioVolume() - 1);
-        sfxPlay(SFX_TAP);                      // so the new level is audible
-      } else if (x >= VOL_PLUS_X && x < VOL_PLUS_X + VOL_BTN_W) {
-        if (audioVolume() < 10) audioSetVolume(audioVolume() + 1);
-        sfxPlay(SFX_TAP);
-      }
+      int nv = audioVolume();
+      if (x >= VOLS_MINUS_X && x < VOLS_MINUS_X + VOL_BTN_W) nv -= VOL_STEP;
+      else if (x >= VOLS_PLUS_X && x < VOLS_PLUS_X + VOL_BTN_W) nv += VOL_STEP;
+      else return;
+      if (nv < 0) nv = 0;
+      if (nv > 100) nv = 100;
+      audioSetVolume((uint8_t)nv);
+      audioSaveVolume();
+      sfxPlay(SFX_TAP);                        // so the new level is audible
     }
   } else if (settingsPage == SET_BRIGHT) {
     if (y >= BRI_ROW_Y && y < BRI_ROW_Y + VOL_BTN_H) {

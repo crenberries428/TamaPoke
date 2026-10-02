@@ -33,7 +33,8 @@ void audioMusic(uint8_t id);
 
 // 0..10. Stored, and applied as the square wave's amplitude; 0 is silence
 // without disabling the system, which is what a mute expects to do.
-void audioSetVolume(uint8_t v);
+void audioSetVolume(uint8_t v);   // 0..100, RAM only: cheap enough to call while dragging
+void audioSaveVolume();           // persist it (NVS), once the drag ends
 uint8_t audioVolume();
 
 void audioBegin();          // init ES8311 + I2S + amplificador + tarea de audio
