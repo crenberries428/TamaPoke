@@ -39,3 +39,4 @@ tamapoke.nvs
 tamapoke.nvs.*
 tools/_*.svg
 backups/
+tools/cache/

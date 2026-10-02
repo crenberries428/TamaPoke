@@ -4,6 +4,7 @@
 #include "Arduino.h"
 #include <vector>
 #include <algorithm>
+#include "cjk.h"   // the real UTF-8 path, shared with the firmware
 
 #define RGB565_BLACK 0x0000
 #define RGB565_WHITE 0xFFFF
@@ -34,6 +35,7 @@ public:
   uint16_t textColor = 0xFFFF;
   uint8_t textSize = 1;
   volatile bool frameReady = false;
+  CjkState cjk;
 
   Arduino_Canvas(int16_t w, int16_t h, Arduino_CO5300 *p)
       : _w(w), _h(h), _panel(p), fb(w * h, 0) {}
@@ -150,6 +152,15 @@ public:
     }
   }
   void print(char ch) {
+    // same split as the firmware's TpCanvas::write: ASCII = stock font, the
+    // rest = the generated CJK table, two columns wide and lifted to sit level
+    int r = cjkFeed(cjk, (uint8_t)ch);
+    if (r == 0) return;
+    if (r == 2) {
+      cjkDraw(*this, cx, cy - 2 * textSize, textSize, textColor, cjk.cp);
+      cx += 12 * textSize;
+      return;
+    }
     if (ch == '\n') { cy += 8 * textSize; cx = 0; return; }
     drawChar(ch, cx, cy);
     cx += 6 * textSize;
@@ -161,3 +172,7 @@ public:
     print(buf);
   }
 };
+
+// the firmware draws through TpCanvas; here the stub canvas already does the UTF-8 work
+#define TP_EMU_CANVAS
+typedef Arduino_Canvas TpCanvas;

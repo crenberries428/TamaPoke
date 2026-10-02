@@ -7,6 +7,7 @@
 #include "pet.h"
 #include "party.h"
 #include "battle.h"
+#include "i18n.h"
 #include <chrono>
 #include <string>
 #include <deque>
@@ -198,8 +199,11 @@ static void writePPM(const char *path) {
   printf("wrote %s\n", path);
 }
 
+static int g_shotLang = -1;   // --lang n: photograph in another language
+
 static int shotMode(const char *screen, const char *out, int lvl, int iv, int dex) {
   setup();
+  if (g_shotLang >= 0) setLang((Lang)g_shotLang);
   for (int i = 0; i < 4; i++) loop();          // let the sketch settle
   bool firstBoot = !strcmp(screen, "starter") || !strcmp(screen, "starterj") ||
                    !strcmp(screen, "region");
@@ -410,6 +414,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--lvl") && i + 1 < argc) shotLvl = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--iv") && i + 1 < argc) shotIv = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--dex") && i + 1 < argc) shotDex = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--lang") && i + 1 < argc) g_shotLang = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--sprites") && i + 1 < argc) emuSetSpriteDir(argv[++i]);
     else if (!strcmp(argv[i], "--wipe")) { remove(save); }
   }
