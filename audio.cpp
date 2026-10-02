@@ -8,11 +8,11 @@
 #include <Preferences.h>
 
 // ---------------------------------------------------------------------------
-// Audio del TamaPoke: códec ES8311 (DAC -> amplificador PA -> altavoz) por I2S.
-// Init del ES8311 portado del driver oficial de Espressif (esp-bsp), fijado a
-// MCLK=4.096MHz (256*fs), 16kHz, 16-bit, esclavo I2S. Los efectos son tonos
-// cuadrados (estilo Game Boy) sintetizados en una tarea aparte para no
-// bloquear el loop de juego.
+// TamaPoke audio: ES8311 codec (DAC -> PA amplifier -> speaker) over I2S.
+// ES8311 init ported from Espressif's official driver (esp-bsp), pinned to
+// MCLK=4.096MHz (256*fs), 16kHz, 16-bit, I2S slave. The effects are square
+// tones (Game Boy style) synthesised in a separate task so as not to
+// block the game loop.
 // ---------------------------------------------------------------------------
 
 #define ES8311_ADDR 0x18
@@ -23,7 +23,7 @@ static bool gReady = false;
 static bool gOn = true;
 static QueueHandle_t gQ = nullptr;
 
-// ---- I2C del códec ----
+// ---- codec I2C ----
 static bool esW(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(ES8311_ADDR);
   Wire.write(reg);
@@ -38,24 +38,24 @@ static uint8_t esR(uint8_t reg) {
   return Wire.available() ? Wire.read() : 0;
 }
 
-// Secuencia de init VERIFICADA EN ESTA PLACA (proyecto PlaneRadar2.0, misma
-// Waveshare 1.75). Clave: reloj DERIVADO DEL BCLK (reg01=0xBF, sin MCLK externo)
-// y referencia interna que alimenta el DAC (reg44=0x58); sin esos dos el codec
-// respondia por I2C pero no salia audio. 16kHz, 16-bit, esclavo I2S.
+// Init sequence VERIFIED ON THIS BOARD (PlaneRadar2.0 project, same
+// Waveshare 1.75). Key: clock DERIVED FROM BCLK (reg01=0xBF, no external MCLK)
+// and internal reference feeding the DAC (reg44=0x58); without those two the codec
+// answered over I2C but no audio came out. 16kHz, 16-bit, I2S slave.
 static bool es8311Init() {
   Wire.beginTransmission(ES8311_ADDR);
   if (Wire.endTransmission() != 0) return false;
 
   // open()
-  esW(0x0D, 0xFA); esW(0x44, 0x08); esW(0x44, 0x08);  // power up + quirk de 1a escritura
+  esW(0x0D, 0xFA); esW(0x44, 0x08); esW(0x44, 0x08);  // power up + 1st-write quirk
   esW(0x01, 0x30); esW(0x02, 0x00); esW(0x03, 0x10); esW(0x16, 0x24);
   esW(0x04, 0x10); esW(0x05, 0x00); esW(0x0B, 0x00); esW(0x0C, 0x00);
   esW(0x10, 0x1F); esW(0x11, 0x7F);
-  esW(0x00, 0x80); esW(0x00, 0x80);                   // reset clock, esclavo
-  esW(0x01, 0xBF);                                    // clk src = BCLK (sin MCLK externo)
-  { uint8_t r = esR(0x06); r &= ~0x20; esW(0x06, r); }  // SCLK no invertido
+  esW(0x00, 0x80); esW(0x00, 0x80);                   // reset clock, slave
+  esW(0x01, 0xBF);                                    // clk src = BCLK (no external MCLK)
+  { uint8_t r = esR(0x06); r &= ~0x20; esW(0x06, r); }  // SCLK not inverted
   esW(0x13, 0x10); esW(0x1B, 0x0A); esW(0x1C, 0x6A);
-  esW(0x44, 0x58);                                    // referencia interna -> alimenta el DAC
+  esW(0x44, 0x58);                                    // internal reference -> feeds the DAC
 
   // config_sample(): BCLK*8 = DIG_MCLK
   esW(0x02, 0x18); esW(0x05, 0x00); esW(0x03, 0x10); esW(0x04, 0x20);
@@ -63,21 +63,21 @@ static bool es8311Init() {
   esW(0x08, 0xFF);
   { uint8_t r = esR(0x06); r &= 0xE0; r |= 0x03; esW(0x06, r); }  // bclk_div=4
 
-  // formato I2S 16-bit
+  // I2S 16-bit format
   esW(0x09, 0x0C); esW(0x0A, 0x0C);
 
-  // start() DAC esclavo
+  // start() DAC slave
   esW(0x00, 0x80); esW(0x01, 0xBF); esW(0x09, 0x0C); esW(0x0A, 0x0C);
   esW(0x17, 0xBF); esW(0x0E, 0x02); esW(0x12, 0x00); esW(0x14, 0x1A);
   esW(0x0D, 0x01); esW(0x15, 0x40); esW(0x37, 0x08); esW(0x45, 0x00);
 
-  // volumen + unmute
-  esW(0x32, 0xBF);                                    // volumen DAC ~0 dB
+  // volume + unmute
+  esW(0x32, 0xBF);                                    // DAC volume ~0 dB
   { uint8_t r = esR(0x31); r &= 0x9F; esW(0x31, r); }  // unmute
   return true;
 }
 
-// ---- sintetizador de tono cuadrado ----
+// ---- square-wave tone synthesiser ----
 struct Note { uint16_t f, ms; };
 
 static const Note N_TAP[]    = {{880, 35}};
@@ -127,7 +127,7 @@ static const TuneDef MUSIC[] = {
 static volatile uint8_t gMusic = MUS_NONE;
 static volatile uint8_t gVol = 50;   // 0..100
 
-static int16_t buf[256 * 2];  // estéreo intercalado (L=R)
+static int16_t buf[256 * 2];  // interleaved stereo (L=R)
 static int16_t mono[256];
 static GbSynth gSyn;
 
@@ -139,7 +139,7 @@ static uint16_t hzToGb(uint16_t hz) {
   return (f < 0 || f > 2047) ? 0 : (uint16_t)f;
 }
 
-// reproduce un tono (o silencio si f==0) con rampa de ataque/caida anti-click
+// plays a tone (or silence if f==0) with an anti-click attack/decay ramp
 static void playTone(uint16_t f, uint16_t ms) {
   if (!gVol) { delay(ms); return; }   // muted: keep the timing, make no sound
   int total = SAMPLE_RATE * ms / 1000;
@@ -154,8 +154,8 @@ static void playTone(uint16_t f, uint16_t ms) {
       if (f) {
         s = high ? amp : -amp;
         int idx = done + i;
-        if (idx < 64) s = (int16_t)(s * idx / 64);                 // ataque
-        else if (idx > total - 96) s = (int16_t)(s * (total - idx) / 96);  // caida
+        if (idx < 64) s = (int16_t)(s * idx / 64);                 // attack
+        else if (idx > total - 96) s = (int16_t)(s * (total - idx) / 96);  // decay
         if (++phase >= half) { phase = 0; high = !high; }
       }
       buf[i * 2] = s; buf[i * 2 + 1] = s;
@@ -266,17 +266,17 @@ void audioSaveVolume() {
 uint8_t audioVolume() { return gVol; }
 
 void audioBegin() {
-  // I2S primero: arranca el MCLK que necesita el códec para engancharse
+  // I2S first: starts the MCLK the codec needs to lock on
   pinMode(PA, OUTPUT);
-  digitalWrite(PA, LOW);   // amp apagado; la tarea lo enciende al reproducir
+  digitalWrite(PA, LOW);   // amp off; the task turns it on when playing
 
   i2s.setPins(I2S_BCK_IO, I2S_WS_IO, I2S_DO_IO, I2S_DI_IO, I2S_MCK_IO);
   if (!i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
                  I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
-    Serial.println("I2S begin fallo");
+    Serial.println("I2S begin failed");
     return;
   }
-  if (!es8311Init()) { Serial.println("ES8311 no responde (audio off)"); return; }
+  if (!es8311Init()) { Serial.println("ES8311 not responding (audio off)"); return; }
 
   Preferences p;
   p.begin("tamapoke", true);
@@ -291,11 +291,11 @@ void audioBegin() {
   gReady = true;
   gQ = xQueueCreate(8, sizeof(uint8_t));
   xTaskCreatePinnedToCore(audioTask, "audio", 4096, nullptr, 1, nullptr, 0);
-  sfxPlay(SFX_HATCH);  // jingle de arranque (confirma que suena)
+  sfxPlay(SFX_HATCH);  // boot jingle (confirms it sounds)
 }
 
 void sfxPlay(uint8_t id) {
-  if (gReady && gOn && gQ) xQueueSend(gQ, &id, 0);  // descarta si la cola esta llena
+  if (gReady && gOn && gQ) xQueueSend(gQ, &id, 0);  // dropped if the queue is full
 }
 
 void audioSetEnabled(bool on) {

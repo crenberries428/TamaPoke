@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Empaquetador de sprites PMD (SpriteCollab) para la pantalla principal.
+"""PMD sprite packer (SpriteCollab) for the main screen.
 
-Genera /mons/pNNN.bin (y psNNN.bin shiny) en formato TPK2 multi-accion:
+Generates /mons/pNNN.bin (and shiny psNNN.bin) in multi-action TPK2 format:
 
   char[4] "TPK2"
   u8  nActs
   u16 palCount
   u16 pal[palCount]                  (RGB565)
-  por accion:
+  per action:
     u8 id, u8 w, u8 h, u8 nFrames
     u16 ms[nFrames]
-    u8 data[w*h*nFrames]             (indices, 0xFF transparente)
+    u8 data[w*h*nFrames]             (indices, 0xFF transparent)
 
-Acciones: 0 Idle, 1 WalkL, 2 WalkR, 3 Sleep, 4 Eat, 5 Hurt, 6 Attack,
-7 Pose, 8 Hop, 9 Nod, 10 DeepBreath, 11 Sit. Las que falten se omiten.
+Actions: 0 Idle, 1 WalkL, 2 WalkR, 3 Sleep, 4 Eat, 5 Hurt, 6 Attack,
+7 Pose, 8 Hop, 9 Nod, 10 DeepBreath, 11 Sit. Missing ones are skipped.
 
-  python3 tools/pack_pmd.py             # el dex entero, normal + shiny
-  python3 tools/pack_pmd.py kanto       # solo una region (johto, hoenn)
-  python3 tools/pack_pmd.py 7 25        # dex concretos
-  python3 tools/pack_pmd.py normal 1 4  # solo normales
+  python3 tools/pack_pmd.py             # the whole dex, normal + shiny
+  python3 tools/pack_pmd.py kanto       # only one region (johto, hoenn)
+  python3 tools/pack_pmd.py 7 25        # specific dex numbers
+  python3 tools/pack_pmd.py normal 1 4  # normals only
 
-Necesita Pillow: pip3 install Pillow
+Requires Pillow: pip3 install Pillow
 """
 import os
 import struct
@@ -37,16 +37,16 @@ DEX_COUNT = int(_re.search(r'#define DEX_COUNT (\d+)', _dexh).group(1))
 OUT = os.path.join(os.path.dirname(__file__), 'sdcard', 'mons')
 CACHE = os.path.join(os.path.dirname(__file__), 'pmd_cache')
 BASE = 'https://raw.githubusercontent.com/PMDCollab/SpriteCollab/master/sprite'
-SLOW = 1.4          # el ritmo original de PMD se siente rapido en el tamagotchi
+SLOW = 1.4          # the original PMD pace feels fast on the tamagotchi
 MIN_MS = 70
 ALPHA_T = 128
 
-# (id, nombre de accion, fila del sheet) — fila None = 0 si solo hay una
-# direcciones del sheet: 0 abajo, 2 DERECHA, 6 IZQUIERDA (verificado en placa)
+# (id, action name, sheet row) -- row None = 0 if there is only one
+# sheet directions: 0 down, 2 RIGHT, 6 LEFT (verified on the board)
 ACTIONS = [
     (0, 'Idle', 0),
-    (1, 'Walk', 6),   # izquierda
-    (2, 'Walk', 2),   # derecha
+    (1, 'Walk', 6),   # left
+    (2, 'Walk', 2),   # right
     (3, 'Sleep', 0),
     (4, 'Eat', 0),
     (5, 'Hurt', 0),
@@ -62,7 +62,7 @@ ACTIONS = [
 def fetch(url, dest):
     """curl, not urllib. The python.org macOS build ships without a usable CA
     bundle, so urlopen dies with CERTIFICATE_VERIFY_FAILED on every request --
-    which this reported as 'sin AnimData.xml', i.e. as if the sprite did not
+    which this reported as 'no AnimData.xml', i.e. as if the sprite did not
     exist. gen_avatars.py and gen_dex_data.py hit the same wall."""
     if os.path.exists(dest):
         return True
@@ -87,14 +87,14 @@ def load_animdata(folder):
     for a in tree.getroot().find('Anims'):
         name = a.find('Name').text
         if a.find('FrameWidth') is None:
-            # alias (CopyOf): apunta a otra animacion
+            # alias (CopyOf): points to another animation
             copy = a.find('CopyOf')
             if copy is not None:
                 anims[name] = ('copy', copy.text)
             continue
         anims[name] = (int(a.find('FrameWidth').text), int(a.find('FrameHeight').text),
                        [int(d.text) for d in a.find('Durations')], name)
-    # resuelve alias (el PNG es el de la animacion original)
+    # resolve alias (the PNG is that of the original animation)
     for k, v in list(anims.items()):
         if isinstance(v, tuple) and v[0] == 'copy':
             anims[k] = anims.get(v[1])
@@ -106,7 +106,7 @@ def pack(dexnum, shiny=False):
     folder = os.path.join(CACHE, f'{dexnum:04d}{"s" if shiny else ""}')
     base = f'{BASE}/{dexnum:04d}{sub}'
     if not fetch(f'{base}/AnimData.xml', os.path.join(folder, 'AnimData.xml')):
-        raise RuntimeError('sin AnimData.xml')
+        raise RuntimeError('no AnimData.xml')
     anims = load_animdata(folder)
 
     colmap, pal = {}, []
@@ -132,7 +132,7 @@ def pack(dexnum, shiny=False):
                 k = px[:3]
                 if k not in colmap:
                     if len(pal) >= 255:
-                        # cercano (raro en PMD, paletas cortas)
+                        # nearest (rare in PMD, short palettes)
                         k2 = min(colmap, key=lambda c: sum((a-b)**2 for a, b in zip(c, k)))
                         colmap[k] = colmap[k2]
                     else:
@@ -143,7 +143,7 @@ def pack(dexnum, shiny=False):
         packed.append((aid, fw, fh, nf, ms, bytes(data)))
 
     if not any(p[0] == 0 for p in packed):
-        raise RuntimeError('sin Idle')
+        raise RuntimeError('no Idle')
 
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, f'p{"s" if shiny else ""}{dexnum:03d}.bin')
@@ -157,7 +157,7 @@ def pack(dexnum, shiny=False):
             f.write(struct.pack(f'<{nf}H', *ms))
             f.write(data)
     kb = os.path.getsize(path) / 1024
-    print(f"  -> p{'s' if shiny else ''}{dexnum:03d}.bin: {len(packed)} acciones, "
+    print(f"  -> p{'s' if shiny else ''}{dexnum:03d}.bin: {len(packed)} actions, "
           f"{len(pal)} colores, {kb:.0f} KB")
 
 
@@ -190,4 +190,4 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f"  FALLO: {e}")
                 fallos.append((n, sh))
-    print(f"FALLOS: {fallos}" if fallos else "TODOS EMPAQUETADOS")
+    print(f"FAILURES: {fallos}" if fallos else "ALL PACKED")

@@ -269,7 +269,7 @@ On hardware, verify over the serial console (115200):
   asserts the crumb names the screen actually on the panel, since a report that
   points at the wrong screen is worse than none.
 - `SPEC <dex>` `LVL <n>` `IV <a> <d> <s> <h>` `HATCH` `SHINY` `EGGS` (20 eggs) `GAL`
-- `MISS <n>` set the care mistakes (`desc=` on STATS); each one delays every
+- `MISS <n>` set the care mistakes (`miss=` on STATS); each one delays every
   evolution by a level, so `MISS 0` forgives a neglected start
 - `TR <atk> <def> <spe>` set the training (this game's EVs); clamped to
   `trMaxFor(iv)`, so it cannot build a creature the player could not raise
@@ -423,7 +423,7 @@ Two boards flashed with v2.4. What was learned, all of it invisible from here:
   the factory log, so the OPI part is live.
 - **`EXPORT` works on real NVS** (596 bytes on a fresh save) -- the save backup's
   first run outside the emulator.
-- A 120 GB card mounts fine: `SD montada: 119850 MB`, `sd=1`.
+- A 120 GB card mounts fine: `SD mounted: 119850 MB`, `sd=1`.
 - **`sin thumbs.bin (galeria sin miniaturas)`** led straight to a real bug: the
   region split silently dropped `thumbs.bin`, because it has no dex number in its
   name and so fell in no region. The Kanto pack was 302 files instead of 303.

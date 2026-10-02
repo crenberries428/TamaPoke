@@ -1,43 +1,43 @@
 #!/usr/bin/env python3
-"""Taller de sprites de TamaPoke.
+"""TamaPoke sprite workshop.
 
-Los sprites 32x32 se CONSTRUYEN con primitivas (elipses con sombreado
-automatico en el borde inferior-derecho, contorno automatico de silueta)
-y detalles a pixel (ojos, boca, manchas). El script valida, renderiza un
-contact-sheet PNG para revision visual, y emite los arrays C y JS:
+The 32x32 sprites are BUILT from primitives (ellipses with shading
+applied automatically on the bottom-right edge, automatic silhouette outline)
+and pixel details (eyes, mouth, spots). The script validates, renders a
+contact-sheet PNG for visual review, and emits the C and JS arrays:
 
-  python3 tools/sprites.py        # valida + renderiza tools/sheet.png
-  python3 tools/sprites.py emit   # regenera species.h y emitted_sprites.js
+  python3 tools/sprites.py        # validates + renders tools/sheet.png
+  python3 tools/sprites.py emit   # regenerates species.h and emitted_sprites.js
 """
 from PIL import Image, ImageDraw
 
 PALETTE = {
-    'k': '#1b1b25',  # contorno / ojos
-    'w': '#ffffff',  # brillo de ojo
-    'y': '#f8d990',  # crema (barriga, placa caparazon)
-    'Y': '#e0b860',  # crema sombra
-    'o': '#f5863d',  # naranja
-    'O': '#d65f28',  # naranja sombra
-    'r': '#e8503a',  # rojo (llama, charmeleon)
-    'R': '#b53224',  # rojo sombra
+    'k': '#1b1b25',  # outline / eyes
+    'w': '#ffffff',  # eye highlight
+    'y': '#f8d990',  # cream (belly, shell plate)
+    'Y': '#e0b860',  # cream shadow
+    'o': '#f5863d',  # orange
+    'O': '#d65f28',  # orange shadow
+    'r': '#e8503a',  # red (flame, charmeleon)
+    'R': '#b53224',  # red shadow
     'f': '#ffd95e',  # amarillo llama
-    't': '#8fd6b4',  # menta (bulbasaur)
-    'T': '#5fae8c',  # menta sombra
-    'g': '#58b868',  # verde bulbo
-    'G': '#3c8a4c',  # verde bulbo sombra
-    'd': '#3f7e62',  # manchas bulbasaur
-    'p': '#f08aa4',  # rosa flor
-    'P': '#c75f80',  # rosa sombra
-    'b': '#7cc4ea',  # azul (squirtle)
-    'B': '#4f93c4',  # azul sombra
-    'N': '#3a6fa0',  # azul blastoise
-    'M': '#2a5278',  # azul blastoise sombra
-    'c': '#b07a45',  # marron caparazon
-    'C': '#7e5530',  # marron sombra
-    'l': '#9aa9e0',  # lavanda (wartortle)
-    'L': '#6f7cb8',  # lavanda sombra
+    't': '#8fd6b4',  # mint (bulbasaur)
+    'T': '#5fae8c',  # mint shadow
+    'g': '#58b868',  # bulb green
+    'G': '#3c8a4c',  # bulb green shadow
+    'd': '#3f7e62',  # bulbasaur spots
+    'p': '#f08aa4',  # flower pink
+    'P': '#c75f80',  # pink shadow
+    'b': '#7cc4ea',  # blue (squirtle)
+    'B': '#4f93c4',  # blue shadow
+    'N': '#3a6fa0',  # blastoise blue
+    'M': '#2a5278',  # blastoise blue shadow
+    'c': '#b07a45',  # shell brown
+    'C': '#7e5530',  # brown shadow
+    'l': '#9aa9e0',  # lavender (wartortle)
+    'L': '#6f7cb8',  # lavender shadow
     's': '#aab0bc',  # gris canon
-    'S': '#787e8c',  # gris sombra
+    'S': '#787e8c',  # grey shadow
 }
 
 W = H = 32
@@ -88,7 +88,7 @@ class G:
         self.g = out
 
     def eye(self, x, y):
-        # ojo 3x4 con brillo
+        # 3x4 eye with highlight
         self.rect(x, y, x + 2, y + 3, 'k')
         self.px(x, y + 1, 'w')
         self.px(x + 1, y, 'w')
@@ -105,30 +105,30 @@ class G:
         return [''.join(r) for r in self.g]
 
 
-# ---------------------------------------------------------------- linea fuego
+# ---------------------------------------------------------------- fire line
 
 def charmander():
     g = G()
-    # cola gruesa subiendo por la derecha, con llama
+    # thick tail rising on the right, with flame
     g.rect(21, 23, 25, 26, 'o')
     g.rect(24, 19, 27, 24, 'O')
     g.rect(26, 15, 28, 20, 'O')
     g.disk(27.5, 12, 3.4, 4.2, 'r', 'R')
     g.px(27, 7, 'r'); g.px(28, 8, 'r')
     g.disk(27.2, 13.2, 1.6, 2.2, 'f')
-    # cabeza grande + cuerpo
+    # big head + body
     g.disk(14, 9.5, 8.2, 7.4, 'o', 'O')
     g.disk(14, 22, 7.0, 6.2, 'o', 'O')
-    # brazos
+    # arms
     g.rect(5, 18, 7, 22, 'o')
     g.rect(21, 18, 23, 20, 'o')
     # patas
     g.rect(7, 27, 11, 30, 'o')
     g.rect(17, 27, 21, 30, 'o')
     g.outline()
-    # barriga crema
+    # cream belly
     g.disk(14, 22.5, 4.6, 4.2, 'y', 'Y')
-    # deditos
+    # little fingers
     g.toes(9, 30); g.toes(19, 30)
     g.eye(9, 6); g.eye(17, 6)
     g.smile(13, 12)
@@ -137,19 +137,19 @@ def charmander():
 
 def charmeleon():
     g = G()
-    # cola larga con llama grande
+    # long tail with big flame
     g.rect(21, 22, 25, 25, 'r')
     g.rect(24, 17, 27, 23, 'R')
     g.disk(27, 12.5, 3.8, 4.6, 'r', 'R')
     g.px(26, 6, 'r'); g.px(27, 7, 'r'); g.px(28, 6, 'r')
     g.disk(26.8, 13.8, 1.8, 2.4, 'f')
-    # cuerno hacia atras
+    # horn pointing backwards
     g.px(19, 2, 'r'); g.px(20, 1, 'r'); g.px(21, 0, 'r')
     g.rect(18, 3, 20, 4, 'r'); g.px(20, 2, 'r'); g.px(21, 1, 'r')
-    # cabeza + cuerpo esbelto
+    # head + slender body
     g.disk(13, 9.5, 7.8, 7.0, 'r', 'R')
     g.disk(13, 22, 6.4, 6.2, 'r', 'R')
-    # brazos con garra
+    # arms with claws
     g.rect(4, 17, 6, 22, 'r')
     g.rect(20, 17, 22, 20, 'r')
     # patas
@@ -165,7 +165,7 @@ def charmeleon():
 
 def charizard():
     g = G()
-    # alas: membrana verdosa con pico alto (detras)
+    # wings: greenish membrane with a high peak (behind)
     for i, (x0, x1) in enumerate([(1, 3), (1, 4), (1, 5), (2, 6), (2, 7), (2, 7),
                                   (3, 8), (3, 8), (3, 9), (4, 9), (4, 9), (5, 9)]):
         g.rect(x0, 4 + i, x1, 4 + i, 'T')
@@ -179,10 +179,10 @@ def charizard():
     g.disk(28, 18, 3.0, 3.8, 'r', 'R')
     g.px(28, 13, 'r'); g.px(27, 14, 'r')
     g.disk(27.8, 19.2, 1.4, 2.0, 'f')
-    # cuerpo macizo + cabeza
+    # sturdy body + head
     g.disk(15, 23, 8.4, 7.0, 'o', 'O')
     g.disk(15, 9, 7.0, 6.2, 'o', 'O')
-    # cuernos
+    # horns
     g.rect(10, 1, 11, 3, 'o'); g.rect(19, 1, 20, 3, 'o')
     # patas anchas
     g.rect(7, 28, 12, 31, 'o')
@@ -199,14 +199,14 @@ def charizard():
 
 def bulbasaur():
     g = G()
-    # bulbo con brote
+    # bulb with sprout
     g.disk(21.5, 8.5, 7.2, 6.4, 'g', 'G')
     g.rect(20, 1, 22, 2, 'G')
-    # cuerpo ancho (cuadrupedo)
+    # wide body (quadruped)
     g.disk(14, 22, 9.6, 6.4, 't', 'T')
-    # cabeza
+    # head
     g.disk(10, 13, 7.8, 6.2, 't', 'T')
-    # orejas
+    # ears
     g.px(3, 4, 't'); g.rect(3, 5, 5, 8, 't'); g.px(4, 4, 't')
     g.px(13, 3, 't'); g.rect(12, 4, 14, 7, 't'); g.px(14, 3, 't')
     # patas
@@ -215,10 +215,10 @@ def bulbasaur():
     g.rect(16, 26, 19, 30, 't')
     g.rect(21, 25, 24, 29, 't')
     g.outline()
-    # hojas abrazando la base del bulbo
+    # leaves hugging the base of the bulb
     g.px(15, 13, 'G'); g.px(16, 14, 'G'); g.px(17, 14, 'G')
     g.px(26, 13, 'G'); g.px(25, 14, 'G')
-    # manchas
+    # spots
     g.rect(7, 7, 8, 7, 'd'); g.rect(13, 17, 14, 18, 'd')
     g.rect(5, 21, 6, 22, 'd'); g.rect(17, 22, 18, 23, 'd')
     g.toes(5, 30); g.toes(11, 30); g.toes(17, 30)
@@ -229,11 +229,11 @@ def bulbasaur():
 
 def ivysaur():
     g = G()
-    # bulbo con capullo rosa y hojas
+    # bulb with pink bud and leaves
     g.disk(21.5, 9.5, 7.0, 5.8, 'g', 'G')
     g.disk(21.5, 3.2, 3.6, 3.0, 'p', 'P')
     g.px(21, 0, 'p'); g.px(22, 0, 'p')
-    # hojas laterales
+    # side leaves
     g.rect(15, 6, 17, 7, 'g'); g.px(14, 5, 'g'); g.px(15, 5, 'g')
     g.rect(28, 6, 30, 7, 'g'); g.px(30, 5, 'g')
     g.disk(14, 22, 9.6, 6.4, 't', 'T')
@@ -245,7 +245,7 @@ def ivysaur():
     g.rect(16, 26, 19, 30, 't')
     g.rect(21, 25, 24, 29, 't')
     g.outline()
-    # division de petalos del capullo
+    # bud petal division
     g.px(21, 1, 'P'); g.px(21, 2, 'P')
     g.px(15, 13, 'G'); g.px(16, 14, 'G')
     g.rect(7, 7, 8, 7, 'd'); g.rect(13, 17, 14, 18, 'd')
@@ -258,19 +258,19 @@ def ivysaur():
 
 def venusaur():
     g = G()
-    # flor abierta: petalos rosas + centro amarillo sobre hojas
+    # open flower: pink petals + yellow centre over leaves
     g.disk(21, 5.5, 7.0, 4.2, 'p', 'P')
     g.disk(21, 6.5, 2.8, 2.0, 'f')
-    # separaciones de petalos
+    # petal separations
     g.px(17, 2, 'P'); g.px(17, 3, 'P'); g.px(25, 2, 'P'); g.px(25, 3, 'P')
-    # corona de hojas
+    # crown of leaves
     g.disk(21, 11, 9.0, 3.2, 'g', 'G')
-    # cuerpo macizo
+    # sturdy body
     g.disk(15, 23, 11.0, 7.0, 't', 'T')
     g.disk(9, 13.5, 7.6, 6.0, 't', 'T')
     g.px(2, 5, 't'); g.rect(2, 6, 4, 9, 't'); g.px(3, 5, 't')
     g.px(12, 4, 't'); g.rect(11, 5, 13, 8, 't'); g.px(13, 4, 't')
-    # patas tronco
+    # trunk legs
     g.rect(3, 26, 7, 30, 't')
     g.rect(10, 26, 14, 30, 't')
     g.rect(17, 26, 21, 30, 't')
@@ -288,20 +288,20 @@ def venusaur():
 
 def squirtle():
     g = G()
-    # cola en espiral (anillo con hueco)
+    # spiral tail (ring with a hole)
     g.disk(23.5, 20, 4.6, 5.2, 'b', 'B')
     g.erase(24.7, 19.2, 1.6, 1.9)
-    # cabeza grande + cuerpo
+    # big head + body
     g.disk(13, 9, 8.4, 7.6, 'b', 'B')
     g.disk(13, 22.5, 7.0, 5.8, 'b', 'B')
-    # brazos
+    # arms
     g.rect(4, 17, 6, 22, 'b')
     g.rect(20, 17, 22, 19, 'b')
     # patas
     g.rect(6, 27, 10, 30, 'b')
     g.rect(16, 27, 20, 30, 'b')
     g.outline()
-    # caparazon: aro marron + placa crema
+    # shell: brown ring + cream plate
     g.disk(13, 22.5, 5.2, 4.4, 'c', 'C')
     g.disk(13, 22.5, 3.6, 3.0, 'y', 'Y')
     g.toes(8, 30); g.toes(18, 30)
@@ -312,25 +312,25 @@ def squirtle():
 
 def wartortle():
     g = G()
-    # cola esponjosa en nube
+    # fluffy cloud tail
     g.disk(23.5, 18, 5.4, 7.0, 'l', 'L')
-    # ondas en la cola
+    # waves on the tail
     g.px(22, 14, 'L'); g.px(23, 15, 'L'); g.px(24, 16, 'L')
     g.px(21, 19, 'L'); g.px(22, 20, 'L')
-    # cabeza + cuerpo
+    # head + body
     g.disk(12, 9.5, 7.8, 7.0, 'l', 'L')
     g.disk(12, 22.5, 6.6, 5.6, 'l', 'L')
-    # orejas onduladas
+    # wavy ears
     g.px(4, 0, 'l'); g.rect(3, 1, 5, 5, 'l'); g.px(2, 2, 'l')
     g.px(18, 0, 'l'); g.rect(17, 1, 19, 5, 'l'); g.px(20, 2, 'l')
-    # brazos
+    # arms
     g.rect(3, 17, 5, 21, 'l')
     g.rect(19, 17, 21, 19, 'l')
     # patas
     g.rect(5, 27, 9, 30, 'l')
     g.rect(15, 27, 19, 30, 'l')
     g.outline()
-    # interior de las orejas
+    # inside of the ears
     g.px(4, 2, 'L'); g.px(4, 3, 'L'); g.px(18, 2, 'L'); g.px(18, 3, 'L')
     g.disk(12, 22.5, 4.8, 4.2, 'c', 'C')
     g.disk(12, 22.5, 3.2, 2.8, 'y', 'Y')
@@ -342,17 +342,17 @@ def wartortle():
 
 def blastoise():
     g = G()
-    # canones inclinados sobre los hombros
+    # cannons tilted over the shoulders
     g.rect(3, 4, 6, 7, 'S')
     g.rect(4, 7, 7, 18, 's')
     g.px(4, 5, 'k'); g.px(5, 5, 'k')
     g.rect(25, 4, 28, 7, 'S')
     g.rect(24, 7, 27, 18, 's')
     g.px(26, 5, 'k'); g.px(27, 5, 'k')
-    # cabeza + cuerpo macizo
+    # head + sturdy body
     g.disk(15.5, 8.5, 7.0, 6.2, 'N', 'M')
     g.disk(15.5, 22, 9.4, 7.2, 'N', 'M')
-    # brazos fornidos
+    # burly arms
     g.rect(5, 19, 8, 25, 'N')
     g.rect(23, 19, 26, 25, 'N')
     # patas anchas
@@ -367,7 +367,7 @@ def blastoise():
     return g.rows()
 
 
-# ------------------------------------------------------------------ genericos
+# ------------------------------------------------------------------ generic
 
 def egg():
     g = G()
@@ -401,7 +401,7 @@ def heart():
     return g.rows()
 
 
-# ------------------------------------------------------------ iconos botones
+# ------------------------------------------------------------ button icons
 
 def icon_food():
     g = G(16)
@@ -457,7 +457,7 @@ def icon_berry_green():
 def icon_candy():
     g = G(16)
     g.disk(8, 8, 4.4, 3.6, 'p', 'P')
-    # envoltorio: picos a los lados
+    # wrapper: spikes on the sides
     g.px(2, 6, 'p'); g.px(2, 8, 'p'); g.px(2, 10, 'p'); g.rect(3, 7, 3, 9, 'p')
     g.px(13, 6, 'p'); g.px(13, 8, 'p'); g.px(13, 10, 'p'); g.rect(12, 7, 12, 9, 'p')
     g.outline()
@@ -498,7 +498,7 @@ SPRITES = {
     "HEART": heart(),
 }
 
-# anclas (ojos 3x4 / boca) y color de cuerpo para las expresiones superpuestas
+# anchors (3x4 eyes / mouth) and body colour for the overlaid expressions
 ANCHORS = {
     "CHARMANDER": dict(eyeRow=6, eyeL=9, eyeR=17, mouthRow=12, mouthCol=13, body='o'),
     "CHARMELEON": dict(eyeRow=6, eyeL=8, eyeR=16, mouthRow=12, mouthCol=12, body='r'),
@@ -518,11 +518,11 @@ def validate():
         n = len(rows)
         for i, row in enumerate(rows):
             if len(row) != n:
-                print(f"{name} fila {i}: {len(row)} chars (esperaba {n})")
+                print(f"{name} row {i}: {len(row)} chars (expected {n})")
                 ok = False
             bad = set(row) - set(PALETTE) - {'.'}
             if bad:
-                print(f"{name} fila {i}: chars desconocidos {bad}")
+                print(f"{name} row {i}: unknown chars {bad}")
                 ok = False
     return ok
 
@@ -551,7 +551,7 @@ def render(path="tools/sheet.png", scale=10, percol=3):
                                     fill=PALETTE[ch])
             d.text((ox, oy + H * scale + 3), name, fill='#000')
     img.save(path)
-    print(f"guardado {path}")
+    print(f"saved {path}")
 
 
 def rgb565(hexcol):
@@ -559,7 +559,7 @@ def rgb565(hexcol):
     return (r >> 3) << 11 | (g >> 2) << 5 | (b >> 3)
 
 
-# nombre -> (tipo, evolucionaA, nivelEvolucion, escala)
+# name -> (type, evolvesTo, evolutionLevel, scale)
 SPECIES_META = {
     "CHARMANDER": ("TYPE_FUEGO", "SP_CHARMELEON", 16, 5),
     "CHARMELEON": ("TYPE_FUEGO", "SP_CHARIZARD", 36, 6),
@@ -586,7 +586,7 @@ UI_COLORS = {
 def emit_c(path="species.h"):
     out = []
     out.append("#pragma once\n#include <stdint.h>\n\n")
-    out.append("// GENERADO por tools/sprites.py - edita alli y ejecuta:\n")
+    out.append("// GENERATED by tools/sprites.py - edit there and run:\n")
     out.append("//   python3 tools/sprites.py emit\n\n")
     out.append(f"#define SPRITE_W {W}\n#define SPRITE_H {H}\n\n")
     for name, hexcol in UI_COLORS.items():
@@ -605,10 +605,10 @@ def emit_c(path="species.h"):
         "  uint8_t scale;\n"
         "  int8_t evolvesTo;\n"
         "  uint8_t evolveLevel;\n"
-        "  uint8_t eyeRow, eyeColL, eyeColR;  // anclas para expresiones (ojos 3x4)\n"
+        "  uint8_t eyeRow, eyeColL, eyeColR;  // anchors for expressions (3x4 eyes)\n"
         "  uint8_t mouthRow, mouthCol;\n"
-        "  uint16_t bodyColor;  // para borrar ojos/boca al expresar\n"
-        "  uint16_t accent;     // color UI del tipo\n"
+        "  uint16_t bodyColor;  // to erase eyes/mouth when expressing\n"
+        "  uint16_t accent;     // UI colour of the type\n"
         "};\n\n")
     out.append("// caracter de sprite -> RGB565\n")
     out.append("static inline uint16_t spriteColor(char ch) {\n  switch (ch) {\n")
@@ -634,7 +634,7 @@ def emit_c(path="species.h"):
     out.append("static const int8_t STARTERS[] = { SP_CHARMANDER, SP_BULBASAUR, SP_SQUIRTLE };\n")
     out.append("#define NUM_STARTERS 3\n")
     open(path, 'w').write(''.join(out))
-    print(f"guardado {path}")
+    print(f"saved {path}")
 
 
 def emit_js(path="tools/emitted_sprites.js"):
@@ -655,13 +655,13 @@ def emit_js(path="tools/emitted_sprites.js"):
         }
     data = {'palette': PALETTE, 'sprites': SPRITES, 'meta': meta, 'order': ids}
     open(path, 'w').write("const SPRITE_DATA=" + json.dumps(data, separators=(',', ':')) + ";\n")
-    print(f"guardado {path}")
+    print(f"saved {path}")
 
 
 if __name__ == '__main__':
     import sys
     if not validate():
-        print("-- errores de validacion --")
+        print("-- validation errors --")
         sys.exit(1)
     render()
     if 'emit' in sys.argv:

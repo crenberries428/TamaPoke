@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Empaqueta los sprites de la SD (tools/sdcard/mons/*.bin) en un .pak POR
-REGION para que el instalador web los suba de un clic.
+"""Packs the SD sprites (tools/sdcard/mons/*.bin) into one .pak PER
+REGION so the web installer can upload them in one click.
 
 ONE FILE PER REGION, not one big one, and that is forced rather than chosen:
 Kanto alone is already ~40 MB, so all three would be ~100 MB -- exactly GitHub's
@@ -8,14 +8,14 @@ hard per-file limit, which would make the bundle uncommittable. Splitting also
 means a player can install Kanto and stop, which is the whole 40 MB most people
 want, and add a region later without re-sending what they already have.
 
-Formato TPAK (little-endian):
+TPAK format (little-endian):
   char[4]  "TPAK"
   uint16   count
-  count x { uint8 nameLen; char name[nameLen]; uint32 size }   (indice)
-  ...datos de cada fichero, en el mismo orden...
+  count x { uint8 nameLen; char name[nameLen]; uint32 size }   (index)
+  ...data of each file, in the same order...
 
-El instalador (web/index.html) lo descarga, lo parte por el indice y manda cada
-fichero a la placa con el protocolo PUT (igual que tools/send_sd.py).
+The installer (web/index.html) downloads it, splits it by the index and sends each
+file to the board with the PUT protocol (same as tools/send_sd.py).
 """
 import glob
 import os
@@ -63,11 +63,11 @@ def write_pak(out, files):
 def main():
     files = sorted(glob.glob(os.path.join(MONS, '*.bin')))
     if not files:
-        raise SystemExit('no hay sprites en ' + MONS)
+        raise SystemExit('no sprites in ' + MONS)
     # Files with no dex number in the name -- thumbs.bin -- are SHARED, not part
     # of any region. Splitting by dex range alone dropped thumbs.bin on the
-    # floor and the board says so at boot: "sin thumbs.bin (galeria sin
-    # miniaturas)".
+    # floor and the board says so at boot: "no thumbs.bin (gallery without
+    # thumbnails)".
     #
     # They go in EVERY pack, not just the first. Riding only with Kanto meant
     # anyone who installed Johto or Hoenn WITHOUT Kanto -- which nothing stops
@@ -88,7 +88,7 @@ def main():
         size = os.path.getsize(out)
         flag = '  !! OVER GITHUB LIMIT' if size > GITHUB_LIMIT else ''
         print(f'{os.path.normpath(out)}: {len(mine)} sprites, '
-              f'{total / 1048576:.1f} MB datos ({size / 1048576:.1f} MB total){flag}')
+              f'{total / 1048576:.1f} MB data ({size / 1048576:.1f} MB total){flag}')
         made += 1
     if not made:
         raise SystemExit('nothing packed')

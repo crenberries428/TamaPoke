@@ -1,19 +1,19 @@
 #pragma once
 #include <stdint.h>
 
-// Efectos de sonido del juego (cola, no bloqueante). El orden coincide con la
-// tabla SFX de audio.cpp.
+// Game sound effects (queue, non-blocking). The order matches the
+// SFX table in audio.cpp.
 enum Sfx : uint8_t {
-  SFX_TAP = 0,  // tocar / boton
+  SFX_TAP = 0,  // tap / button
   SFX_EAT,      // comer
-  SFX_PLAY,     // punto del minijuego / golpe
-  SFX_HEART,    // le gusta / mimo
+  SFX_PLAY,     // minigame point / hit
+  SFX_HEART,    // likes it / cuddle
   SFX_HATCH,    // eclosion
-  SFX_EVOLVE,   // evolucion
-  SFX_MEDAL,    // medalla / hito
-  SFX_DENY,     // accion no permitida
-  SFX_BYE,      // despedida
-  SFX_LEVEL,    // sube de nivel
+  SFX_EVOLVE,   // evolution
+  SFX_MEDAL,    // medal / milestone
+  SFX_DENY,     // action not allowed
+  SFX_BYE,      // farewell
+  SFX_LEVEL,    // level up
   // battle cues: a fight in silence is what made it feel flat
   SFX_HIT,      // a physical move landing
   SFX_BEAM,     // a special move
@@ -37,7 +37,7 @@ void audioSetVolume(uint8_t v);   // 0..100, RAM only: cheap enough to call whil
 void audioSaveVolume();           // persist it (NVS), once the drag ends
 uint8_t audioVolume();
 
-void audioBegin();          // init ES8311 + I2S + amplificador + tarea de audio
-void sfxPlay(uint8_t id);   // encola un efecto (no bloquea el loop)
+void audioBegin();          // init ES8311 + I2S + amplifier + audio task
+void sfxPlay(uint8_t id);   // queues an effect (does not block the loop)
 void audioSetEnabled(bool on);
 bool audioEnabled();

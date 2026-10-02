@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Fuente unica de datos de la Pokedex gen 1 para TamaPoke.
+"""Single source of Pokedex data (gen 1 and onward) for TamaPoke.
 
-Cada entrada: (num, slug, nombre_pantalla, tipo, evoluciona_a, nivel)
-- slug: nombre en minusculas de la especie (identificador interno)
-- nombre_pantalla: ASCII en mayusculas (la fuente GFX no tiene acentos)
-- tipo: clave de TYPE_ACCENTS (color del nombre en la UI)
-- evoluciona_a: numero de dex (0 = forma final); niveles gen 1 reales,
-  piedras ~30 y por intercambio ~40 convertidos a nivel. Eevee (133) se
-  ramifica en el codigo del juego (134/135/136 al azar).
+Each entry: (num, slug, display_name, type, evolves_to, level)
+- slug: lowercase name of the species (internal identifier)
+- display_name: uppercase ASCII (the GFX font has no accents)
+- type: key of TYPE_ACCENTS (colour of the name in the UI)
+- evolves_to: dex number (0 = final form); real gen 1 levels,
+  stones ~30 and trade ~40 converted to a level. Eevee (133)
+  branches in the game code (134/135/136 at random).
 """
 
 TYPE_ACCENTS = {
@@ -31,7 +31,7 @@ TYPE_ACCENTS = {
     'siniestro': '#5a4a3d',
 }
 
-# num, slug, display, tipo, evolucionaA, nivel
+# num, slug, display, type, evolvesTo, level
 DEX = [
     (1, 'bulbasaur', 'BULBASAUR', 'planta', 2, 16),
     (2, 'ivysaur', 'IVYSAUR', 'planta', 3, 32),
@@ -165,7 +165,7 @@ DEX = [
     (130, 'gyarados', 'GYARADOS', 'agua', 0, 0),
     (131, 'lapras', 'LAPRAS', 'agua', 0, 0),
     (132, 'ditto', 'DITTO', 'normal', 0, 0),
-    (133, 'eevee', 'EEVEE', 'normal', 134, 30),  # rama al azar en el juego
+    (133, 'eevee', 'EEVEE', 'normal', 134, 30),  # random branch in the game
     (134, 'vaporeon', 'VAPOREON', 'agua', 0, 0),
     (135, 'jolteon', 'JOLTEON', 'electrico', 0, 0),
     (136, 'flareon', 'FLAREON', 'fuego', 0, 0),
@@ -846,7 +846,7 @@ DEX = [
     (809, 'melmetal', 'MELMETAL', 'acero', 0, 0),
 ]
 
-# el primer huevo de la partida siempre es un inicial clasico
+# the game's first egg is always a classic starter
 CLASSIC = [1, 4, 7, 25, 133]
 
 # National dex ranges, and the starters offered for a first egg in each.
@@ -875,7 +875,7 @@ REGIONS = [
     ('ALOLA', 722, 809, [722, 725, 728]),
 ]
 
-# rarezas de las formas base (lo que no este aqui y sea base = comun)
+# rarities of the base forms (anything not listed here that is a base form = common)
 RARE = {58, 77, 83, 88, 95, 106, 107, 108, 111, 113, 114, 115, 122, 123, 124, 125, 126, 127, 128, 131, 132, 137, 138, 140, 142, 143, 147,
         # generated:
         152, 155, 158, 182, 186, 190, 196, 197, 198, 200, 211, 214, 225, 227, 234, 235, 237, 238, 239, 240, 241, 246, 252, 255, 258, 292, 302, 303, 337, 338, 345, 347, 351, 359, 369, 371, 374, 387, 390, 393, 408, 410, 414, 441, 443, 458, 470, 471, 475, 479, 495, 498, 501, 538, 539, 550, 561, 564, 566, 615, 621, 626, 633, 636, 650, 653, 656, 696, 698, 700, 704, 722, 725, 728, 741, 765, 766, 774, 775, 778, 781, 782, 793, 794, 795, 796, 797, 798, 799, 803, 805, 806}

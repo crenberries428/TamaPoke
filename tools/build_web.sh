@@ -1,15 +1,24 @@
 #!/bin/bash
-# Regenera web/firmware/tamapoke.bin (firmware combinado) para el instalador web.
-# Uso: bash tools/build_web.sh
+# Rebuilds web/firmware/tamapoke.bin (merged firmware) for the web installer.
+# Usage: bash tools/build_web.sh
 set -e
 cd "$(dirname "$0")/.."
 FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB"
 
-echo "Compilando..."
-arduino-cli compile --fqbn "$FQBN" --export-binaries .
+echo "Compiling..."
+# arduino-cli requires sketch dir name == .ino file name. The repo may be
+# cloned as TamaPoke-DylanPDao/. Create a temp dir named TamaPoke with
+# symlinks to every source file, compile directly into repo build/ via
+# --output-dir so the cp lines below still work unchanged.
+SKETCH_TMP="$(mktemp -d)/TamaPoke"
+mkdir "$SKETCH_TMP"
+for f in *.ino *.cpp *.c *.h; do [ -f "$f" ] && ln -s "$(pwd)/$f" "$SKETCH_TMP/$f"; done
+trap 'rm -rf "$(dirname "$SKETCH_TMP")"' EXIT
+mkdir -p build/esp32.esp32.esp32s3
+arduino-cli compile --fqbn "$FQBN" --output-dir "$(pwd)/build/esp32.esp32.esp32s3" "$SKETCH_TMP"
 
 B=build/esp32.esp32.esp32s3
-echo "Fusionando binarios..."
+echo "Merging binaries..."
 # esptool is not on PATH; the Arduino core ships one and that is the version
 # that matches the build we just made.
 ESPTOOL="$(ls ~/Library/Arduino15/packages/esp32/tools/esptool_py/*/esptool 2>/dev/null | head -1)"
@@ -25,7 +34,11 @@ ESPTOOL="$(ls ~/Library/Arduino15/packages/esp32/tools/esptool_py/*/esptool 2>/d
 # 0x9000..0xE000 alone, exactly as arduino-cli's USB upload always has.
 cp "$B/TamaPoke.ino.bootloader.bin" web/firmware/bootloader.bin
 cp "$B/TamaPoke.ino.partitions.bin" web/firmware/partitions.bin
-cp "$B/boot_app0.bin"               web/firmware/boot_app0.bin
+# Newer arduino-cli does not copy boot_app0.bin into --output-dir; take the
+# core's own copy then.
+BOOT_APP0="$B/boot_app0.bin"
+[ -f "$BOOT_APP0" ] || BOOT_APP0="$(ls ~/Library/Arduino15/packages/esp32/hardware/esp32/*/tools/partitions/boot_app0.bin | tail -1)"
+cp "$BOOT_APP0"                     web/firmware/boot_app0.bin
 cp "$B/TamaPoke.ino.bin"            web/firmware/app.bin
 
 # Still merged for anyone flashing a BLANK board from the command line in one
@@ -33,7 +46,7 @@ cp "$B/TamaPoke.ino.bin"            web/firmware/app.bin
 "$ESPTOOL" --chip esp32s3 merge-bin -o web/firmware/tamapoke.bin \
   0x0     "$B/TamaPoke.ino.bootloader.bin" \
   0x8000  "$B/TamaPoke.ino.partitions.bin" \
-  0xe000  "$B/boot_app0.bin" \
+  0xe000  "$BOOT_APP0" \
   0x10000 "$B/TamaPoke.ino.bin"
 
 echo "OK -> web/firmware/ (4 parts + tamapoke.bin for a blank board)"
@@ -80,5 +93,9 @@ PYEOF
 echo "Checking the installer cannot erase a save..."
 python3 tools/check_installer.py || { echo "installer would wipe saves -- refusing"; exit 1; }
 
-echo "Empaquetando sprites..."
-python3 tools/pack_bundle.py
+if ls tools/sdcard/mons/*.bin >/dev/null 2>&1; then
+  echo "Packing sprites..."
+  python3 tools/pack_bundle.py
+else
+  echo "No local sprites in tools/sdcard/mons; keeping the committed web/sprites-*.pak"
+fi

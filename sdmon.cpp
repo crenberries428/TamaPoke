@@ -50,7 +50,7 @@ bool PmdMon::load(int16_t dexNum, bool shiny) {
     uint8_t id = p[0], w = p[1], h = p[2], nf = p[3];
     p += 4;
     if (id >= PMD_NACTS || nf > 24) { unload(); return false; }
-    // valida que ms[] y los datos del frame caben en el blob (archivo truncado)
+    // checks that ms[] and the frame data fit in the blob (truncated file)
     uint32_t bytes = (uint32_t)nf * 2 + (uint32_t)w * h * nf;
     if (w == 0 || h == 0 || nf == 0 || p + bytes > end) { unload(); return false; }
     PmdAct &a = acts[id];
@@ -63,7 +63,7 @@ bool PmdMon::load(int16_t dexNum, bool shiny) {
     }
     a.data = p;
     p += (uint32_t)w * h * nf;
-    // fila mas baja con contenido en cualquier frame: anclar por los pies
+    // lowest row with content in any frame: anchor by the feet
     uint8_t base = 1;
     for (uint8_t f = 0; f < nf; f++) {
       const uint8_t *fr = a.data + (uint32_t)f * w * h;
@@ -77,7 +77,7 @@ bool PmdMon::load(int16_t dexNum, bool shiny) {
     a.base = base;
   }
   loaded = true;
-  Serial.printf("cargado %s (%u KB)\n", path, size / 1024);
+  Serial.printf("loaded %s (%u KB)\n", path, size / 1024);
   return true;
 }
 
@@ -97,7 +97,7 @@ bool SdThumbs::load() {
   if (!sdReady) return false;
   File f = SD_MMC.open("/mons/thumbs.bin", FILE_READ);
   if (!f) {
-    Serial.println("sin thumbs.bin (galeria sin miniaturas)");
+    Serial.println("no thumbs.bin (gallery without thumbnails)");
     return false;
   }
   uint32_t size = f.size();
@@ -111,7 +111,7 @@ bool SdThumbs::load() {
   f.close();
   memcpy(&count, data + 4, 2);
   loaded = true;
-  Serial.printf("miniaturas cargadas: %u (%u KB)\n", count, size / 1024);
+  Serial.printf("thumbnails loaded: %u (%u KB)\n", count, size / 1024);
   return true;
 }
 
@@ -148,7 +148,7 @@ void sdScanRegionArt(bool verbose) {
     }
     if (all) mask |= (uint16_t)(1u << r);
     if (verbose)
-      Serial.printf("art: %-6s %s\n", rg.name, all ? "si" : "NO (falta el pack)");
+      Serial.printf("art: %-6s %s\n", rg.name, all ? "yes" : "NO (pack missing)");
   }
   gRegionArt = mask;
 }
@@ -157,11 +157,11 @@ bool sdBegin() {
   SD_MMC.setPins(SDMMC_CLK, SDMMC_CMD, SDMMC_DATA);
   sdReady = SD_MMC.begin("/sdcard", true /* modo 1-bit */, true /* formatea si no monta */);
   if (sdReady) {
-    Serial.printf("SD montada: %llu MB\n", SD_MMC.cardSize() / (1024ULL * 1024ULL));
+    Serial.printf("SD mounted: %llu MB\n", SD_MMC.cardSize() / (1024ULL * 1024ULL));
     SD_MMC.mkdir("/mons");
     sdScanRegionArt();
   } else {
-    Serial.println("SD no detectada (el juego usa los sprites de flash)");
+    Serial.println("SD not detected (the game uses the flash sprites)");
   }
   return sdReady;
 }
@@ -174,12 +174,12 @@ bool SdMon::load(int16_t dexNum, bool shiny) {
   char path[24];
   snprintf(path, sizeof(path), "/mons/%s%03u.bin", shiny ? "s" : "", (unsigned)dexNum);
   File f = SD_MMC.open(path, FILE_READ);
-  if (!f && shiny) {  // sin variante shiny: usa la normal
+  if (!f && shiny) {  // no shiny variant: use the normal one
     snprintf(path, sizeof(path), "/mons/%03u.bin", (unsigned)dexNum);
     f = SD_MMC.open(path, FILE_READ);
   }
   if (!f) {
-    Serial.printf("no existe %s\n", path);
+    Serial.printf("%s not found\n", path);
     return false;
   }
 
@@ -194,7 +194,7 @@ bool SdMon::load(int16_t dexNum, bool shiny) {
   h = header[1];
   frames = header[2];
   frameMs = header[3];
-  // acota dimensiones: evita size desbordado o absurdo con archivo corrupto
+  // bounds the dimensions: avoids an overflowed or absurd size with a corrupt file
   if (f.read((uint8_t *)&palCount, 2) != 2 || palCount > 256 ||
       w == 0 || w > 256 || h == 0 || h > 256 || frames == 0 || frames > 64) {
     f.close();
@@ -208,7 +208,7 @@ bool SdMon::load(int16_t dexNum, bool shiny) {
   uint32_t size = (uint32_t)w * h * frames;
   data = (uint8_t *)ps_malloc(size);
   if (!data) {
-    Serial.println("sin PSRAM para el sprite");
+    Serial.println("no PSRAM for the sprite");
     f.close();
     return false;
   }
@@ -220,12 +220,12 @@ bool SdMon::load(int16_t dexNum, bool shiny) {
     return false;
   }
 
-  // zoom entero para que el bicho mida ~200 px de alto en pantalla
+  // integer zoom so the creature is ~200 px tall on screen
   scale = 200 / h;
   if (scale < 2) scale = 2;
   if (scale > 5) scale = 5;
 
-  Serial.printf("cargado %s: %ux%u x%u frames @%ums, escala %u\n",
+  Serial.printf("loaded %s: %ux%u x%u frames @%ums, scale %u\n",
                 path, w, h, frames, frameMs, scale);
   loaded = true;
   return true;
@@ -240,9 +240,9 @@ void SdMon::unload() {
 }
 
 // ---------------------------------------------------------------------------
-// Protocolo de carga por USB (para llenar la SD sin sacarla de la placa):
-//   PUT <ruta> <bytes>\n  + datos crudos   -> "OK" ... "DONE"
-//   LS\n                                   -> listado de /mons
+// USB upload protocol (to fill the SD without taking it out of the board):
+//   PUT <path> <bytes>\n  + raw data   -> "OK" ... "DONE"
+//   LS\n                                   -> listing of /mons
 // Usar con tools/send_sd.py
 // ---------------------------------------------------------------------------
 
@@ -271,7 +271,7 @@ bool sdSerialCommand(const String &line) {
       if (n == 0) break;  // timeout
       f.write(buf, n);
       remaining -= n;
-      Serial.println("#");  // ack: listo para el siguiente bloque
+      Serial.println("#");  // ack: ready for the next block
     }
     f.close();
     Serial.setTimeout(1000);
