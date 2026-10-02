@@ -20,7 +20,7 @@ void setup(); void loop(); void render();
 void clockTap(int16_t,int16_t);
 extern Pet pet;
 extern bool clockOpen;
-extern uint8_t settingsPage, dimStage;
+extern uint8_t settingsPage, dimStage, gBright;
 
 static int bad=0;
 static void ck(bool ok,const char*w){printf("%s  %s\n",ok?"PASS":"FAIL",w); if(!ok)bad++;}
@@ -74,22 +74,34 @@ int main(){
   ck(settingsPage != SET_VOLUME, "a swipe that starts off the bar still pages");
   settingsPage = SET_VOLUME;
 
-  // - and + step by 5 and clamp
+  // - and + step by 1 and clamp
   audioSetVolume(50);
   clockTap(PLUS_X + 20, ROW_Y + 20);
-  ck(audioVolume() == 55, "+ adds 5");
+  ck(audioVolume() == 51, "+ adds 1");
   clockTap(MINUS_X + 20, ROW_Y + 20);
   clockTap(MINUS_X + 20, ROW_Y + 20);
-  ck(audioVolume() == 45, "- subtracts 5");
-  audioSetVolume(98); clockTap(PLUS_X + 20, ROW_Y + 20);
+  ck(audioVolume() == 49, "- subtracts 1");
+  audioSetVolume(99); clockTap(PLUS_X + 20, ROW_Y + 20);
   ck(audioVolume() == 100, "+ clamps at 100");
-  audioSetVolume(3); clockTap(MINUS_X + 20, ROW_Y + 20);
+  audioSetVolume(1); clockTap(MINUS_X + 20, ROW_Y + 20);
   ck(audioVolume() == 0, "- clamps at 0");
 
   // TEST leaves the level alone and the screen where it is
   audioSetVolume(40);
   clockTap(TEST_X + 20, SW_Y + 20);
   ck(audioVolume() == 40 && clockOpen && settingsPage == SET_VOLUME, "TEST changes nothing but the sound");
+
+  // the brightness page is the same slider over 1..10
+  settingsPage = 2;
+  down(BAR_X + 20, BAR_Y); move(BAR_X + BAR_W + 12, BAR_Y); up();
+  ck(gBright == 10, "brightness: dragging past the right end gives 10");
+  ck(clockOpen && settingsPage == 2, "and does not page");
+  down(BAR_X + 120, BAR_Y); move(BAR_X - 14, BAR_Y); up();
+  ck(gBright == 1, "brightness: dragging past the left end stops at 1, never 0");
+  down(BAR_X + BAR_W / 2, BAR_Y); up();
+  ck(gBright == 5 || gBright == 6, "brightness: the middle of the bar is about 5");
+  clockTap(PLUS_X + 20, ROW_Y + 20);
+  ck(gBright >= 6 && gBright <= 7, "brightness: + steps by 1");
 
   printf("%s\n", bad ? "FAILED" : "all passed");
   return bad ? 1 : 0;

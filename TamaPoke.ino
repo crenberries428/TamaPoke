@@ -36,7 +36,7 @@
 
 // Version del firmware. Subir este numero en cada release (y manifest.json para
 // el instalador web). Se muestra en la pantalla de ajustes y por serie al arrancar.
-#define FW_VERSION "3.11"
+#define FW_VERSION "3.12"
 
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(
   LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
@@ -1191,7 +1191,7 @@ void handleTouch() {
     lastInteract = millis();
     if (sliderDrag) {                    // save once, not on every pixel of the drag
       sliderDrag = false;
-      audioSaveVolume();
+      clockSliderEnd();
       sfxPlay(SFX_TAP);                  // hear the level you landed on
     }
     int dx = tXl - tX0, dy = tYl - tY0;
@@ -2839,7 +2839,7 @@ void drawClockBtn(int x, int y, const char *l) {
 #define VOLS_BAR_X 110
 #define VOLS_BAR_W 246
 #define VOLS_BAR_H 24
-#define VOL_STEP 5
+#define VOL_STEP 1
 #define VOL_MINUS_X 96
 #define VOL_PLUS_X 310
 #define VOL_BTN_W 60
@@ -2869,6 +2869,28 @@ static void settingsTitle(const char *s) {
   gfx->setTextSize(3);
   gfx->setCursor(CX - (int)strlen(s) * 9, 44);
   gfx->print(s);
+}
+
+// One slider for volume (0..100) and brightness (1..10). The knob centre runs
+// inside the track, so the whole circle stays within the bar at both ends, and
+// sliderValue() is the exact inverse of sliderKnobX().
+static int sliderKnobX(int v, int lo, int hi) {
+  return VOLS_BAR_X + VOLS_BAR_H / 2 + (VOLS_BAR_W - VOLS_BAR_H) * (v - lo) / (hi - lo);
+}
+static int sliderValue(int x, int lo, int hi) {
+  int span = VOLS_BAR_W - VOLS_BAR_H;
+  int t = x - VOLS_BAR_X - VOLS_BAR_H / 2;
+  if (t < 0) t = 0;
+  if (t > span) t = span;
+  return lo + (t * (hi - lo) + span / 2) / span;
+}
+static void drawSlider(int v, int lo, int hi) {
+  int by = VOL_ROW_Y + 28;
+  int kx = sliderKnobX(v, lo, hi);
+  gfx->fillRoundRect(VOLS_BAR_X, by, VOLS_BAR_W, VOLS_BAR_H, 12, UI_TRACK);
+  gfx->fillRoundRect(VOLS_BAR_X, by, kx - VOLS_BAR_X, VOLS_BAR_H, 12, UI_BAR_OK);
+  gfx->fillCircle(kx, by + VOLS_BAR_H / 2, VOLS_BAR_H / 2, UI_WHITE);   // the knob
+  gfx->drawCircle(kx, by + VOLS_BAR_H / 2, VOLS_BAR_H / 2, UI_INK);
 }
 
 void renderClock() {
@@ -2931,16 +2953,11 @@ void renderClock() {
     gfx->setTextSize(2);
     gfx->setCursor(VOLS_BAR_X + (VOLS_BAR_W - (int)strlen(vl) * 12) / 2, VOL_ROW_Y + 4);
     gfx->print(vl);
-    int by = VOL_ROW_Y + 28;
-    gfx->fillRoundRect(VOLS_BAR_X, by, VOLS_BAR_W, VOLS_BAR_H, 8, UI_TRACK);
-    int fw = VOLS_BAR_W * v / 100;
-    if (fw >= 8) gfx->fillRoundRect(VOLS_BAR_X, by, fw, VOLS_BAR_H, 8, UI_BAR_OK);
-    gfx->fillCircle(VOLS_BAR_X + fw, by + VOLS_BAR_H / 2, 15, UI_WHITE);   // the knob
-    gfx->drawCircle(VOLS_BAR_X + fw, by + VOLS_BAR_H / 2, 15, UI_INK);
+    drawSlider(v, 0, 100);
   } else if (settingsPage == SET_BRIGHT) {
     settingsTitle(T(S_SET_BRIGHT));
     for (int i = 0; i < 2; i++) {
-      int bx = i ? VOL_PLUS_X : VOL_MINUS_X;
+      int bx = i ? VOLS_PLUS_X : VOLS_MINUS_X;
       bool live = i ? (gBright < 10) : (gBright > 1);
       gfx->fillRoundRect(bx, BRI_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, live ? UI_WHITE : UI_TRACK);
       gfx->drawRoundRect(bx, BRI_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, UI_INK);
@@ -2955,8 +2972,7 @@ void renderClock() {
     gfx->setTextSize(4);
     gfx->setCursor(CX - (int)strlen(bl) * 12, 130);
     gfx->print(bl);
-    gfx->fillRoundRect(VOL_BAR_X, BRI_ROW_Y + 22, VOL_BAR_W, 16, 5, UI_TRACK);
-    gfx->fillRoundRect(VOL_BAR_X, BRI_ROW_Y + 22, VOL_BAR_W * gBright / 10, 16, 5, UI_BAR_OK);
+    drawSlider(gBright, 1, 10);
   } else if (settingsPage == SET_LANG) {
     settingsTitle(T(S_SET_LANG));
     for (int i = 0; i < LANG_COUNT; i++) {
@@ -3008,15 +3024,26 @@ void renderClock() {
 // follows the finger. handleTouch keeps a gesture that began on it away from the
 // swipe/tap resolver, or a horizontal drag would page the settings screen.
 bool clockSliderHit(int16_t x, int16_t y) {
-  return clockOpen && settingsPage == SET_VOLUME && y >= VOL_ROW_Y + 20 && y < VOL_ROW_Y + VOL_BTN_H &&
+  return clockOpen && (settingsPage == SET_VOLUME || settingsPage == SET_BRIGHT) &&
+         y >= VOL_ROW_Y + 20 && y < VOL_ROW_Y + VOL_BTN_H &&
          x >= VOLS_BAR_X - 16 && x <= VOLS_BAR_X + VOLS_BAR_W + 16;
 }
 
+void saveBright() {
+  Preferences bp;
+  bp.begin("tamapoke", false);
+  bp.putUChar("bri", gBright);
+  bp.end();
+}
+
 void clockSliderSet(int16_t x) {
-  int v = ((int)x - VOLS_BAR_X) * 100 / VOLS_BAR_W;
-  if (v < 0) v = 0;
-  if (v > 100) v = 100;
-  audioSetVolume((uint8_t)v);
+  if (settingsPage == SET_BRIGHT) gBright = (uint8_t)sliderValue(x, 1, 10);   // applied live
+  else audioSetVolume((uint8_t)sliderValue(x, 0, 100));
+}
+
+void clockSliderEnd() {   // NVS is written once, on release
+  if (settingsPage == SET_BRIGHT) saveBright();
+  else audioSaveVolume();
 }
 
 void clockTap(int16_t x, int16_t y) {
@@ -3053,16 +3080,13 @@ void clockTap(int16_t x, int16_t y) {
   } else if (settingsPage == SET_BRIGHT) {
     if (y >= BRI_ROW_Y && y < BRI_ROW_Y + VOL_BTN_H) {
       int nb = gBright;
-      if (x >= VOL_MINUS_X && x < VOL_MINUS_X + VOL_BTN_W) nb--;
-      else if (x >= VOL_PLUS_X && x < VOL_PLUS_X + VOL_BTN_W) nb++;
+      if (x >= VOLS_MINUS_X && x < VOLS_MINUS_X + VOL_BTN_W) nb--;
+      else if (x >= VOLS_PLUS_X && x < VOLS_PLUS_X + VOL_BTN_W) nb++;
       if (nb < 1) nb = 1;
       if (nb > 10) nb = 10;
       if (nb != gBright) {
         gBright = (uint8_t)nb;
-        Preferences bp;
-        bp.begin("tamapoke", false);
-        bp.putUChar("bri", gBright);
-        bp.end();
+        saveBright();
         sfxPlay(SFX_TAP);
       }
     }
