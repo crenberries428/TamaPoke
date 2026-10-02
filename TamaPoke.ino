@@ -151,7 +151,8 @@ char partyBannerName[14] = "";
 bool clockOpen = false;       // pantalla de ajuste de hora (deslizar abajo)
 int clockH = 12, clockM = 0;  // hora en edicion
 // settings pages, swiped left/right
-enum { SET_TIME, SET_VOLUME, SET_LANG, SET_ABOUT, SET_PAGES };
+enum { SET_TIME, SET_VOLUME, SET_BRIGHT, SET_LANG, SET_ABOUT, SET_PAGES };
+uint8_t gBright = 7;           // screen brightness 1..10, saved under "bri"
 uint8_t settingsPage = 0;
 
 // escena de bano: espuma sobre el bicho y limpieza al reventar
@@ -669,7 +670,14 @@ void setup() {
   // QSPI a 80MHz (por defecto 40): el flush del framebuffer es el cuello de
   // botella del fps (~56ms a 40MHz). Si el panel mostrara basura, bajar a 40M.
   if (!gfx->begin(80000000)) Serial.println("gfx->begin() fallo");
-  panel->setBrightness(180);
+  {
+    Preferences bp;
+    bp.begin("tamapoke", true);
+    gBright = bp.getUChar("bri", 7);
+    bp.end();
+    if (gBright < 1 || gBright > 10) gBright = 7;
+  }
+  panel->setBrightness(gBright * 255 / 10);
 
   touch.setPins(TP_RESET, TP_INT);
   bool touchOk = false;
@@ -839,8 +847,11 @@ void updateBrightness(uint32_t now) {
   }
   uint32_t idle = now - lastInteract;
   dimStage = (idle > 300000) ? 2 : (idle > 90000) ? 1 : 0;
-  uint8_t target = pet.sleeping ? 25 : (usbPresent() ? 180 : 145);
-  if (dimStage == 1) target = pet.sleeping ? 10 : 60;
+  // the player's level (1..10) sets the awake brightness; the sleep and idle
+  // dim levels below it only ever go DOWN from it, never above
+  uint8_t base = (uint8_t)(gBright * 255 / 10);
+  uint8_t target = pet.sleeping ? 25 : base;
+  if (dimStage == 1) target = pet.sleeping ? 10 : (base < 60 ? base : 60);
   else if (dimStage == 2) target = 8;
   if (screenOff) target = 0;
   static uint8_t current = 255;
@@ -2819,6 +2830,7 @@ void drawClockBtn(int x, int y, const char *l) {
 #define VOL_BTN_H 60
 #define VOL_BAR_X 176
 #define VOL_BAR_W 114
+#define BRI_ROW_Y 214
 
 // language page: a 2 x 3 grid, one pill per language
 #define LANG_GRID_X 68
@@ -2897,6 +2909,26 @@ void renderClock() {
     gfx->print(vl);
     gfx->fillRoundRect(VOL_BAR_X, VOL_ROW_Y + 36, VOL_BAR_W, 12, 4, UI_TRACK);
     if (v) gfx->fillRoundRect(VOL_BAR_X, VOL_ROW_Y + 36, VOL_BAR_W * v / 10, 12, 4, UI_BAR_OK);
+  } else if (settingsPage == SET_BRIGHT) {
+    settingsTitle(T(S_SET_BRIGHT));
+    for (int i = 0; i < 2; i++) {
+      int bx = i ? VOL_PLUS_X : VOL_MINUS_X;
+      bool live = i ? (gBright < 10) : (gBright > 1);
+      gfx->fillRoundRect(bx, BRI_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, live ? UI_WHITE : UI_TRACK);
+      gfx->drawRoundRect(bx, BRI_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, UI_INK);
+      gfx->setTextColor(live ? UI_INK : 0x8410);
+      gfx->setTextSize(4);
+      gfx->setCursor(bx + VOL_BTN_W / 2 - 12, BRI_ROW_Y + 17);
+      gfx->print(i ? "+" : "-");
+    }
+    char bl[8];
+    snprintf(bl, sizeof(bl), "%u/10", gBright);
+    gfx->setTextColor(UI_INK);
+    gfx->setTextSize(4);
+    gfx->setCursor(CX - (int)strlen(bl) * 12, 130);
+    gfx->print(bl);
+    gfx->fillRoundRect(VOL_BAR_X, BRI_ROW_Y + 22, VOL_BAR_W, 16, 5, UI_TRACK);
+    gfx->fillRoundRect(VOL_BAR_X, BRI_ROW_Y + 22, VOL_BAR_W * gBright / 10, 16, 5, UI_BAR_OK);
   } else if (settingsPage == SET_LANG) {
     settingsTitle(T(S_SET_LANG));
     for (int i = 0; i < LANG_COUNT; i++) {
@@ -2968,6 +3000,22 @@ void clockTap(int16_t x, int16_t y) {
         sfxPlay(SFX_TAP);                      // so the new level is audible
       } else if (x >= VOL_PLUS_X && x < VOL_PLUS_X + VOL_BTN_W) {
         if (audioVolume() < 10) audioSetVolume(audioVolume() + 1);
+        sfxPlay(SFX_TAP);
+      }
+    }
+  } else if (settingsPage == SET_BRIGHT) {
+    if (y >= BRI_ROW_Y && y < BRI_ROW_Y + VOL_BTN_H) {
+      int nb = gBright;
+      if (x >= VOL_MINUS_X && x < VOL_MINUS_X + VOL_BTN_W) nb--;
+      else if (x >= VOL_PLUS_X && x < VOL_PLUS_X + VOL_BTN_W) nb++;
+      if (nb < 1) nb = 1;
+      if (nb > 10) nb = 10;
+      if (nb != gBright) {
+        gBright = (uint8_t)nb;
+        Preferences bp;
+        bp.begin("tamapoke", false);
+        bp.putUChar("bri", gBright);
+        bp.end();
         sfxPlay(SFX_TAP);
       }
     }

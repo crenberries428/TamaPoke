@@ -131,6 +131,7 @@ enum StrId : uint8_t {
   S_BOX_TAKE,       // box detail sheet: move this creature into the party
   S_RETIRE_GONE,    // retire confirm: an early retire is not banked either
   S_SET_VOLUME, S_SET_LANG, S_ABOUT,   // settings page titles
+  S_SET_BRIGHT,     // settings page title
   STR_COUNT
 };
 

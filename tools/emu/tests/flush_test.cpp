@@ -69,7 +69,7 @@ int main(){
   clearAll(); playerOpen=true;   check("player");
   clearAll(); menuOpen=true;     check("menu");
   clearAll(); partyOpen=true;    check("party");
-  for (uint8_t p=0;p<4;p++){ clearAll(); clockOpen=true; settingsPage=p;
+  for (uint8_t p=0;p<5;p++){ clearAll(); clockOpen=true; settingsPage=p;
     char n[16]; snprintf(n,sizeof(n),"settings%u",p); check(n); }
   for (uint8_t p=0;p<4;p++){ clearAll(); cardOpen=true; cardPage=p;
     char n[16]; snprintf(n,sizeof(n),"card%u",p); check(n); }
