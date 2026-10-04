@@ -235,7 +235,7 @@ static int shotMode(const char *screen, const char *out, int lvl, int iv, int de
   // It started firing for every shot once dex_moves.py gained the cheap early
   // attacks, because a creature now genuinely has moves waiting.
   while (pet.hasLearnOffer()) pet.declineLearn();
-  if (g_shotSteps >= 0) {            // let the medal toast expire: it would cover the plate
+  if (g_shotSteps >= 0 || g_shotHour >= 0 || !strcmp(screen, "main")) {  // let the medal toast expire: it would cover the plate
     emuSetTimeScale(5000);
     uint32_t t0 = millis();
     while (millis() - t0 < 4000) {}
