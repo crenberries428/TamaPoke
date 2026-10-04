@@ -9,7 +9,11 @@
 #include <vector>
 
 typedef std::map<std::string, std::vector<uint8_t>> NvsStore;
-inline NvsStore &nvs() { static NvsStore s; return s; }
+// Heap-allocated and never freed on purpose: the sketch's globals (the Pet and
+// its Preferences) are destroyed AFTER a function-local static built later, and
+// ~Preferences() touches both of these -- a use-after-destroy at exit that
+// segfaulted every test linking the sketch.
+inline NvsStore &nvs() { static NvsStore *s = new NvsStore; return *s; }
 void nvsLoad(const char *path);
 void nvsSave(const char *path);
 
@@ -23,7 +27,7 @@ public:
   // is why no test could see it. A closed handle reads defaults and drops writes.
   int h = 0;
   bool started = false;
-  static std::set<int> &closedSet() { static std::set<int> s; return s; }
+  static std::set<int> &closedSet() { static std::set<int> *s = new std::set<int>; return *s; }
   static int &nextHandle() { static int n = 0; return n; }
   bool dead() const { return h && closedSet().count(h); }
   Preferences() = default;

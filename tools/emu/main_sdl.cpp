@@ -1,5 +1,6 @@
 // TamaPoke desktop emulator: runs the real sketch, draws the real framebuffer,
 // and feeds mouse clicks in as touch events. Serial commands come from stdin.
+#include "rtcbat.h"
 #include <SDL.h>   // sdl2-config puts the SDL2 dir on the include path
 #include "Arduino.h"
 #include "Arduino_GFX_Library.h"
@@ -168,6 +169,8 @@ extern uint8_t pickTrainer, pickPage;
 void pickDefault(uint8_t cap);
 extern bool pickHard;
 void startSpeedGame();
+void startBath();
+extern uint32_t bathUntil;
 void setup();
 void loop();
 void render();
@@ -199,11 +202,17 @@ static void writePPM(const char *path) {
   printf("wrote %s\n", path);
 }
 
+static int g_shotHour = -1;   // --hour h: photograph at that hour of the day
+static int g_shotSteps = -1;  // --steps n: photograph with n steps walked today
 static int g_shotLang = -1;   // --lang n: photograph in another language
 
+void drawSplash();
 static int shotMode(const char *screen, const char *out, int lvl, int iv, int dex) {
   setup();
+  if (!strcmp(screen, "splash")) { drawSplash(); writePPM(out); return 0; }   // the boot title card
   if (g_shotLang >= 0) setLang((Lang)g_shotLang);
+  if (g_shotHour >= 0) { rtcSetEpoch(1767225600UL + g_shotHour * 3600UL); pet.lastSeenEpoch = rtcEpoch(); }
+  if (g_shotSteps >= 0) pet.setStepsToday((uint32_t)g_shotSteps);
   for (int i = 0; i < 4; i++) loop();          // let the sketch settle
   bool firstBoot = !strcmp(screen, "starter") || !strcmp(screen, "starterj") ||
                    !strcmp(screen, "region");
@@ -226,6 +235,12 @@ static int shotMode(const char *screen, const char *out, int lvl, int iv, int de
   // It started firing for every shot once dex_moves.py gained the cheap early
   // attacks, because a creature now genuinely has moves waiting.
   while (pet.hasLearnOffer()) pet.declineLearn();
+  if (g_shotSteps >= 0) {            // let the medal toast expire: it would cover the plate
+    emuSetTimeScale(5000);
+    uint32_t t0 = millis();
+    while (millis() - t0 < 4000) {}
+    emuSetTimeScale(1);
+  }
   // "region" is step one of the first boot and "starter" is step two, so the
   // second one gets there the way a player does: by tapping a region.
   if (!strcmp(screen, "starter")) onTap(233, 108 + 30);        // KANTO
@@ -265,6 +280,12 @@ static int shotMode(const char *screen, const char *out, int lvl, int iv, int de
     btlFoe.hp = btlFoe.maxHp / 3;      // bar mid-drain
     btlLungeUntil[0] = millis() + 130; // you mid-lunge
     btlHitUntil[1] = millis() + 300;   // foe flinching
+  }
+  else if (!strcmp(screen, "sleep")) { pet.sleeping = true; }
+  else if (!strcmp(screen, "heart")) { pet.caress(); usleep(650000); }   // mid-float
+  else if (!strcmp(screen, "bath") || !strcmp(screen, "bathpop")) {
+    startBath();
+    bathUntil = millis() + (screen[4] ? 400 : 1700);   // mid-foam, or mid-pop
   }
   else if (!strcmp(screen, "gyms")) { gymOpen = true; }
   else if (!strcmp(screen, "gympick")) { gymOpen = true; gymPick = true; }
@@ -415,6 +436,8 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--iv") && i + 1 < argc) shotIv = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--dex") && i + 1 < argc) shotDex = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--lang") && i + 1 < argc) g_shotLang = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--hour") && i + 1 < argc) g_shotHour = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--steps") && i + 1 < argc) g_shotSteps = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--sprites") && i + 1 < argc) emuSetSpriteDir(argv[++i]);
     else if (!strcmp(argv[i], "--wipe")) { remove(save); }
   }
