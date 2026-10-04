@@ -39,5 +39,8 @@ uint8_t audioVolume();
 
 void audioBegin();          // init ES8311 + I2S + amplifier + audio task
 void sfxPlay(uint8_t id);   // queues an effect (does not block the loop)
+// Queues a species' cry. Silent for a species with none (everything past Kanto),
+// so callers do not need to check.
+void audioCry(int16_t dex);
 void audioSetEnabled(bool on);
 bool audioEnabled();
