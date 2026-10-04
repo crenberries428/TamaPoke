@@ -32,12 +32,17 @@
 #include "pet.h"
 #include "sdmon.h"
 #include "rtcbat.h"
+#include "imu.h"
+#include "steps.h"
 #include "i18n.h"
+#include "logo.h"
+#include "uifont.h"
 #include "audio.h"
 
 // Version del firmware. Subir este numero en cada release (y manifest.json para
 // el instalador web). Se muestra en la pantalla de ajustes y por serie al arrancar.
 #define FW_VERSION "3.12"
+#define PET_CRY_GAP_MS 6000  // minimum time between cries from petting
 
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(
   LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
@@ -85,6 +90,8 @@ struct {
   float x = 233, targetX = 233;
 } beh;
 #define PET_GROUND 304  // the pet's ground line
+#define PET_ZOOM 120    // main-screen creature zoom, percent (on top of the integer base scale)
+#define PET_MAX_PX 205  // ...capped to this drawn height so it stays below the name
 PmdMon galleryPmd;  // large sprite for the gallery detail view (PMD/TPK2, legal)
 
 // pokedex gallery
@@ -386,9 +393,9 @@ uint8_t btlMyAct = 0;        // host: our own action, latched until theirs lands
 // uiConfirmRects(). Copies of this geometry in the tap handler are exactly how
 // a YES button ends up somewhere the drawing is not.
 #define CONFIRM_X 73
-#define CONFIRM_Y 156
+#define CONFIRM_Y 126   // grown upward so two TINY cost lines fit above the buttons
 #define CONFIRM_W 320
-#define CONFIRM_H 188
+#define CONFIRM_H 218
 #define CONFIRM_BTN_X 93
 #define CONFIRM_BTN_W 280
 #define CONFIRM_BTN_H 52
@@ -610,8 +617,8 @@ Btn buttons[BTN_COUNT] = {
 // egg cracks ('k' pixels over the sprite)
 static const uint8_t CRACK1[][2] = { {15,8},{16,9},{15,10} };
 static const uint8_t CRACK2[][2] = { {11,13},{12,14},{11,15},{20,12},{19,13},{20,14} };
-// night mode stars
-static const uint16_t STARS[][2] = { {120,140},{330,120},{370,210},{95,230},{280,90},{160,95} };
+// night mode stars: positions are rolled once per boot (see drawStars)
+#define STAR_COUNT 40
 
 bool wasPressed = false;
 // starter choice (first game): Bulbasaur / Charmander / Squirtle, 3 rows
@@ -667,6 +674,31 @@ int16_t tX0, tY0, tXl, tYl; // gesto en curso (inicio y ultima posicion)
 uint32_t tStart = 0;
 bool holdFired = false;
 
+// Boot splash: the title in the ABOUT page's logo colours, shown while the rest
+// of setup() runs. Skipped after a crash restart -- the player is already inside
+// a game and wants it back, not a title card.
+#define SPLASH_MS 2000   // closes itself after this long
+// The wordmark bitmap, pre-rendered by tools/gen_logo.py (2 bpp index image),
+// centred on cy. Shared by the ABOUT page and the boot splash so they match.
+void drawLogo(int cy) {
+  const uint16_t pal[4] = {0, 0xFE40, 0x3A79, 0x10A8};   // clear, yellow, blue, navy
+  const int x0 = CX - LOGO_W / 2, y0 = cy - LOGO_H / 2;
+  for (int y = 0; y < LOGO_H; y++)
+    for (int x = 0; x < LOGO_W; x++) {
+      int i = y * LOGO_W + x;
+      uint8_t v = (LOGO_BITS[i >> 2] >> ((i & 3) * 2)) & 3;
+      if (v) gfx->fillRect(x0 + x, y0 + y, 1, 1, pal[v]);
+    }
+}
+
+void drawSplash() {
+  gfx->fillScreen(RGB565_BLACK);
+  gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
+  drawLogo(CY);
+  uiText(UIF_TINY, CX, CY + LOGO_H / 2 + 24, "by C.R.", UI_TRACK_TEXT, 1);   // quiet credit
+  gfx->flush();
+}
+
 void setup() {
   Serial.setRxBufferSize(8192);  // the SD transfer arrives in 2 KB blocks
   Serial.begin(115200);
@@ -701,6 +733,13 @@ void setup() {
   }
   panel->setBrightness(gBright * 255 / 10);
 
+  const int bootReason = (int)esp_reset_reason();
+  const bool crashed = (bootReason == ESP_RST_PANIC || bootReason == ESP_RST_INT_WDT ||
+                        bootReason == ESP_RST_TASK_WDT || bootReason == ESP_RST_WDT ||
+                        bootReason == ESP_RST_BROWNOUT);
+  const uint32_t splashAt = millis();
+  if (!crashed) drawSplash();
+
   touch.setPins(TP_RESET, TP_INT);
   bool touchOk = false;
   for (int i = 0; i < 3 && !touchOk; i++) {  // sometimes fails on the first attempt
@@ -726,6 +765,7 @@ void setup() {
   rtcBegin();
   batBegin();
   pwrSetup();
+  imuBegin();
   uint32_t e = rtcEpoch();
   if (e == 0) {
     rtcSetEpoch(1767225600UL);  // blank RTC: seed (the absolute time does not matter,
@@ -737,6 +777,12 @@ void setup() {
   audioBegin();  // ES8311 + I2S + amplifier (plays a boot jingle)
 
   lastInteract = millis();
+
+  // hold the splash for its full time even if setup() finished sooner
+  if (!crashed) {
+    uint32_t used = millis() - splashAt;
+    if (used < SPLASH_MS) delay(SPLASH_MS - used);
+  }
 }
 
 // loads/unloads the SD sprite when the species changes
@@ -759,6 +805,13 @@ void ensureMon() {
 void loop() {
   uint32_t now = millis();
   pet.update(now);
+
+  // Steps are sampled on every pass, screen on or off: a board in a pocket is
+  // the case this exists for. A render frame is ~100 ms, so samples arrive
+  // unevenly; StepDetector takes the timestamp and does not care.
+  static StepDetector stepper;
+  float ax, ay, az;
+  if (imuReadAccel(ax, ay, az)) pet.addSteps(stepper.feed(ax, ay, az, now));
 
   // The link is pumped here rather than from the LAN screen, because it has to
   // keep running through the battle too: linkNowPoll() drains what the radio
@@ -913,6 +966,31 @@ void handleSerial() {
     pet.ageMinutes = (uint32_t)(want - 1) * MINUTES_PER_LEVEL;
     pet.saveNow();
     Serial.printf("lvl=%u\n", pet.level());
+  } else if (line.startsWith("STEPS ")) {
+    // STEPS <n>: sets today's step count, to see the plate without a walk
+    long want = line.substring(6).toInt();
+    if (want < 0) want = 0;
+    if (want > STEP_MAX) want = STEP_MAX;
+    pet.setStepsToday((uint32_t)want);
+    pet.saveNow();
+    Serial.printf("steps=%lu\n", (unsigned long)pet.stepsToday());
+  } else if (line.startsWith("ENE ")) {
+    // ENE <0-100>: sets energy, e.g. to clear the >= 40 evolution gate
+    long want = line.substring(4).toInt();
+    if (want < 0) want = 0;
+    if (want > 100) want = 100;
+    pet.energy = (uint8_t)want;
+    pet.saveNow();
+    Serial.printf("ene=%u\n", pet.energy);
+  } else if (line == "POOP" || line.startsWith("POOP ")) {
+    // POOP [n]: leaves n piles on the screen (default 1, max 3), for checking
+    // how they draw. Same family as MISS / IV / TR.
+    long n = line.length() > 5 ? line.substring(5).toInt() : 1;
+    if (n < 0) n = 0;
+    if (n > 3) n = 3;
+    pet.poops = (uint8_t)n;
+    pet.saveNow();
+    Serial.printf("poops=%u\n", pet.poops);
   } else if (line.startsWith("MISS ")) {
     // MISS <n>: sets the care mistakes -- the miss= on STATS.
     // Each one pushes every evolution threshold up a level, so a creature that
@@ -1079,6 +1157,14 @@ void handleSerial() {
     Serial.println(ok ? "IMPORT OK" : "IMPORT REJECTED");
     inN = 0;
     if (ok) { Serial.println("DONE"); delay(100); ESP.restart(); }
+  } else if (line == "NAME" || line.startsWith("NAME ")) {
+    // NAME <owner>   owner shown above TamaPoke on ABOUT; bare NAME clears it
+    String arg = line.substring(4);
+    arg.trim();
+    pet.setOwnerName(arg.c_str());
+    Serial.print("OWNER ");
+    Serial.println(pet.ownerName);
+    Serial.println("DONE");
   } else if (line == "WIPE") {
     pet.factoryReset();     // wipes NVS and reboots -> new game (starter choice)
     Serial.println("DONE");
@@ -1300,17 +1386,11 @@ void renderMonSheet(const PartyMon &m, bool fromBox) {
   char head[36];
   snprintf(head, sizeof(head), "%s%s Lv.%u", m.shiny ? "*" : "",
            m.nick[0] ? m.nick : d.name, (unsigned)m.level);
-  gfx->setTextColor(d.accent);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(head) * 6, 40);
-  gfx->print(head);
+  uiText(UIF_SMALL, CX, 54, head, d.accent, 1);
   char ty[24];
   if (d.type2 == T_NONE) snprintf(ty, sizeof(ty), "%s", typeName(d.type1));
   else snprintf(ty, sizeof(ty), "%s/%s", typeName(d.type1), typeName(d.type2));
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(1);
-  gfx->setCursor(CX - (int)cjkCols(ty) * 3, 64);
-  gfx->print(ty);
+  uiText(UIF_TINY, CX, 71, ty, UI_TRACK_TEXT, 1);
 
   for (int i = 0; i < MOVE_SLOTS; i++)
     drawMoveRow(78 + i * 52, m.moves[i], false, m.dex);
@@ -1318,10 +1398,7 @@ void renderMonSheet(const PartyMon &m, bool fromBox) {
   char st[40];
   snprintf(st, sizeof(st), "ATK %u  DEF %u  SPD %u  HP %u",
            party.atkOf(m), party.defOf(m), party.speOf(m), party.vitOf(m));
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(1);
-  gfx->setCursor(CX - (int)cjkCols(st) * 3, 300);
-  gfx->print(st);
+  uiTextFit(UIF_SMALL, CX, 308, st, UI_INK, 1, 380);
 
   // Bringing one back is only offered while an egg is waiting. Otherwise it
   // would silently destroy whatever creature is currently alive, and a rule the
@@ -1331,25 +1408,19 @@ void renderMonSheet(const PartyMon &m, bool fromBox) {
                         : (pet.isEgg() && !pet.awaitingStarter());
   const char *leftLbl = fromBox ? T(S_BOX_TAKE) : T(S_REVIVE);
   gfx->fillRoundRect(PDET_L_X, PDET_BTN_Y, PDET_L_W, PDET_BTN_H, 10,
-                     leftOk ? UI_BAR_OK : UI_TRACK);
+                     leftOk ? UI_BAR_OK : UI_TRACK_TEXT);
   gfx->drawRoundRect(PDET_L_X, PDET_BTN_Y, PDET_L_W, PDET_BTN_H, 10, UI_INK);
-  gfx->setTextColor(leftOk ? UI_BG_DAY : 0x8410);
-  gfx->setTextSize(2);
-  gfx->setCursor(PDET_L_X + PDET_L_W / 2 - (int)cjkCols(leftLbl) * 6,
-                 PDET_BTN_Y + PDET_BTN_H / 2 - 8);
-  gfx->print(leftLbl);
+  uiTextFit(UIF_SMALL, PDET_L_X + PDET_L_W / 2, PDET_BTN_Y + PDET_BTN_H / 2 + 7,
+            leftLbl, leftOk ? UI_BG_DAY : 0x8410, 1, PDET_L_W - 8);
 
   gfx->fillRoundRect(PDET_R_X, PDET_BTN_Y, PDET_R_W, PDET_BTN_H, 10, UI_BAR_BAD);
   gfx->drawRoundRect(PDET_R_X, PDET_BTN_Y, PDET_R_W, PDET_BTN_H, 10, UI_INK);
-  gfx->setTextColor(UI_WHITE);
-  gfx->setTextSize(1);
-  gfx->setCursor(PDET_R_X + PDET_R_W / 2 - (int)cjkCols(T(S_RELEASE_BTN)) * 3,
-                 PDET_BTN_Y + PDET_BTN_H / 2 - 4);
-  gfx->print(T(S_RELEASE_BTN));
+  uiTextFit(UIF_SMALL, PDET_R_X + PDET_R_W / 2, PDET_BTN_Y + PDET_BTN_H / 2 + 7,
+            T(S_RELEASE_BTN), UI_WHITE, 1, PDET_R_W - 8);
 
   // WHY the button is dead, ABOVE it and in a colour that can be read.
   //
-  // This used to sit BELOW the buttons in UI_TRACK -- pale beige on a pale
+  // This used to sit BELOW the buttons in UI_TRACK_TEXT -- pale beige on a pale
   // background, at the smallest text size, eight pixels above "tap: back". It
   // was reported as "every time I hit bring back it just buzzes": the refusal
   // was correct (reviving would destroy the creature you are raising) but the
@@ -1358,15 +1429,9 @@ void renderMonSheet(const PartyMon &m, bool fromBox) {
   // that is also where the eye is already travelling.
   if (!leftOk) {
     const char *why = fromBox ? T(S_PARTY_FULL) : T(S_REVIVE_EGG);
-    gfx->setTextColor(UI_BAR_WARN);
-    gfx->setTextSize(1);
-    gfx->setCursor(CX - (int)cjkCols(why) * 3, PDET_BTN_Y - 14);
-    gfx->print(why);
+    uiTextFit(UIF_TINY, CX, PDET_BTN_Y - 8, why, UI_BAR_WARN, 1, 340);
   }
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_BACK)) * 6, 404);
-  gfx->print(T(S_BACK));
+  uiText(UIF_SMALL, CX, 418, T(S_BACK), UI_TRACK_TEXT, 1);
 
   // Asked before it happens, because nothing gets this creature back: it is not
   // a farewell, it does not join anything, and there is no undo.
@@ -1374,7 +1439,7 @@ void renderMonSheet(const PartyMon &m, bool fromBox) {
     char q[40];
     snprintf(q, sizeof(q), T(S_RELEASE_FMT), m.nick[0] ? m.nick : d.name);
     drawConfirmPanel(q, T(S_RELEASE_GONE), nullptr, UI_BAR_BAD,
-                     T(S_YES), UI_BAR_BAD, UI_WHITE, T(S_NO), UI_TRACK, UI_INK);
+                     T(S_YES), UI_BAR_BAD, UI_WHITE, T(S_NO), UI_TRACK_TEXT, UI_INK);
   }
   gfx->flush();
 }
@@ -1610,9 +1675,9 @@ void onSwipe(int dir) {
     return;
   }
   if (playerOpen) {   // horizontal pages it, like the card and the gallery
+    // circular, like the creature's card: the screen only closes by tapping
     int p = (int)playerPage + (dir > 0 ? -1 : 1);
-    if (p < 0 || p >= PLAYER_PAGES) playerOpen = false;
-    else playerPage = (uint8_t)p;
+    playerPage = (uint8_t)((p + PLAYER_PAGES) % PLAYER_PAGES);
     return;
   }
   if (trainOpen) { trainOpen = false; return; }
@@ -1641,14 +1706,16 @@ void onSwipe(int dir) {
   if (gameOpen) { leaveGame(); return; }   // swipe out, keeping what you earned
   if (spdOpen) { leaveSpeed(); return; }
   if (kbOpen) return;
-  if (clockOpen) {   // settings: horizontal pages, clamped; OK/cancel close it
+  if (clockOpen) {   // settings: horizontal pages, circular; OK/cancel close it
     int p = (int)settingsPage + (dir > 0 ? -1 : 1);
-    if (p >= 0 && p < SET_PAGES) settingsPage = (uint8_t)p;
+    settingsPage = (uint8_t)((p + SET_PAGES) % SET_PAGES);
     return;
   }
   if (cardOpen) {  // dentro de la ficha: cambiar entre las 4 paginas
-    int p = (int)cardPage + (dir > 0 ? -1 : 1);  // izquierda avanza
-    cardPage = p < 0 ? 0 : (p > CARD_PAGES - 1 ? CARD_PAGES - 1 : p);
+    // circular: a left swipe past the last page lands on the first, a right
+    // swipe before the first lands on the last
+    int p = (int)cardPage + (dir > 0 ? -1 : 1);  // left advances
+    cardPage = (uint8_t)((p + CARD_PAGES) % CARD_PAGES);
     return;
   }
   if (!galleryOpen) {
@@ -1753,13 +1820,6 @@ void onTap(int16_t x, int16_t y) {
   if (gymOpen) {
     if (y >= GYMDIF_Y && y <= GYMDIF_Y + GYMDIF_H) {   // the difficulty pill
       gymHard = !gymHard;
-      sfxPlay(SFX_TAP);
-      return;
-    }
-    if (y >= 380 && y <= 412 && x >= 148 && x <= 318) {   // LAN battle
-      gymOpen = false;
-      lan.state = LINK_OFF;
-      lanOpen = true;
       sfxPlay(SFX_TAP);
       return;
     }
@@ -1924,7 +1984,10 @@ void onTap(int16_t x, int16_t y) {
     bool b1 = inX && y >= c1t && y <= c1b;   // action
     bool b2 = inX && y >= c2t && y <= c2b;   // keep / stay together
     if (choiceKind == 1) {                 // evolution
-      if (b1) { int16_t old = pet.speciesId; pet.evolve(); evoPmd.load(old, pet.shiny); }
+      if (b1) {
+        int16_t old = pet.speciesId; pet.evolve(); evoPmd.load(old, pet.shiny);
+        audioCry(pet.speciesId);
+      }
       else if (b2) pet.declineEvolve();
     } else if (choiceKind == 3) {          // retirement on request
       if (b1) pet.startRetire();
@@ -1959,6 +2022,7 @@ void onTap(int16_t x, int16_t y) {
     if (eggRegionTap(x, y)) return;
     pet.eggTap();
     sfxPlay(SFX_TAP);
+    if (!pet.isEgg()) audioCry(pet.speciesId);   // it just hatched
     return;
   }
   // evolution button: opens the evolve/keep dialog
@@ -1992,8 +2056,9 @@ void onTap(int16_t x, int16_t y) {
     }
   }
   // tapping the name/status band opens the menu. This band was inert before,
-  // and it sits clear of inPetZone (which starts at y 95).
-  if (y >= 28 && y < 94) {
+  // and it sits clear of inPetZone (which starts at y 95). It starts at y 12 so
+  // the menu icon beside the clock (drawMenuHint) is inside it.
+  if (y >= 12 && y < 94) {
     menuOpen = true;
     sfxPlay(SFX_TAP);
     return;
@@ -2001,13 +2066,27 @@ void onTap(int16_t x, int16_t y) {
   // tapping the creature = petting
   if (inPetZone(x, y)) {
     pet.caress();
-    if (!pet.sleeping) sfxPlay(SFX_HEART);
+    if (!pet.sleeping) {
+      // the creature answers a pet now and then; every tap would be a racket
+      static uint32_t lastCryAt = 0;
+      if (!lastCryAt || millis() - lastCryAt > PET_CRY_GAP_MS) {
+        lastCryAt = millis() ? millis() : 1;
+        audioCry(pet.speciesId);
+      } else sfxPlay(SFX_HEART);
+    }
   }
 }
 
 // ---------- render ----------
 
 bool gNight = false;  // real night (by hour) or asleep: set by render()
+
+// The species accent is picked to read on the dark night sky; on the pale
+// morning / afternoon / sunset skies a yellow or light-blue name all but vanishes.
+// Darkening it toward black keeps the hue and gives the contrast back.
+static uint16_t nameOnSky(uint16_t accent) {
+  return lerp565(accent, RGB565_BLACK, 11, 20);
+}
 uint16_t inkColor() { return gNight ? UI_INK_NIGHT : UI_INK; }
 
 // ---------- background scene: type biome + real RTC time ----------
@@ -2039,14 +2118,110 @@ static const uint16_t BIOME_SOIL[6] = {
   C565(0xe6, 0xee, 0xf5),  // 5 snow
 };
 
-void drawClouds(uint32_t now, uint16_t col) {
-  for (int k = 0; k < 2; k++) {
-    int cx = (int)((now / 50 + k * 250) % 560) - 40;
-    int cy = 70 + k * 34;
-    gfx->fillCircle(cx, cy, 16, col);
-    gfx->fillCircle(cx + 18, cy + 3, 13, col);
-    gfx->fillCircle(cx - 15, cy + 4, 12, col);
+// One puffy cloud: a flat-bottomed body of overlapping circles, a soft shadow
+// band under it and a highlight on the top puffs.
+static void drawCloud(int cx, int cy, int s, uint16_t col, uint16_t shade) {
+  // s = scale in percent
+  auto px = [&](int v) { return v * s / 100; };
+  int r1 = px(17), r2 = px(13), r3 = px(11), r4 = px(9);
+  // shadow body, one step lower
+  gfx->fillRoundRect(cx - px(30), cy + px(2), px(60), px(14), px(7), shade);
+  gfx->fillCircle(cx + px(20), cy + px(5), r3, shade);
+  gfx->fillCircle(cx - px(20), cy + px(6), r4, shade);
+  // main body
+  gfx->fillRoundRect(cx - px(30), cy - px(2), px(60), px(14), px(7), col);
+  gfx->fillCircle(cx - px(2), cy - px(6), r1, col);
+  gfx->fillCircle(cx + px(18), cy + px(1), r2, col);
+  gfx->fillCircle(cx - px(19), cy + px(3), r3, col);
+  gfx->fillCircle(cx + px(30), cy + px(6), r4, col);
+  gfx->fillCircle(cx - px(30), cy + px(7), r4, col);
+}
+
+void drawClouds(uint32_t now, uint16_t col, uint16_t shade) {
+  static const int Y[3] = { 62, 108, 170 };
+  static const int S[3] = { 120, 80, 100 };
+  static const int OFS[3] = { 0, 190, 360 };
+  static const int DIV[3] = { 70, 110, 90 };  // ms per px: far clouds drift slower
+  for (int k = 0; k < 3; k++) {
+    int cx = (int)((now / DIV[k] + OFS[k]) % 600) - 70;
+    drawCloud(cx, Y[k], S[k], col, shade);
   }
+}
+
+// Sun: a stepped halo blended into the sky, slowly turning rays, a disc and a
+// small highlight. 'sky' is the sky colour at the sun's height.
+static void drawSun(int cx, int cy, int r, uint16_t core, uint16_t sky, uint32_t now) {
+  for (int i = 0; i < 4; i++)
+    gfx->fillCircle(cx, cy, r + 30 - i * 8, lerp565(sky, core, i + 1, 9));
+  float a0 = (now % 24000) * (2.0f * PI / 24000.0f);
+  for (int k = 0; k < 8; k++) {
+    float a = a0 + k * (PI / 4.0f);
+    float ca = cosf(a), sa = sinf(a), cb = cosf(a + 0.16f), sb = sinf(a + 0.16f);
+    int r0 = r + 4, r1 = r + (k & 1 ? 20 : 28);
+    gfx->fillTriangle(cx + (int)(ca * r0), cy + (int)(sa * r0),
+                      cx + (int)(cb * r0), cy + (int)(sb * r0),
+                      cx + (int)(ca * r1 + cb * r1) / 2, cy + (int)(sa * r1 + sb * r1) / 2,
+                      lerp565(sky, core, 6, 9));
+  }
+  gfx->fillCircle(cx, cy, r, core);
+  gfx->fillCircle(cx, cy, r - 5, lerp565(core, C565(0xff, 0xff, 0xff), 1, 3));
+  gfx->fillCircle(cx - r / 3, cy - r / 3, r / 4, C565(0xff, 0xff, 0xff));
+}
+
+// Stars: random spots inside the round panel, rolled on first use. Each one
+// twinkles on its own period and phase; the bright ones get a small cross.
+static void drawStars(uint32_t now, uint16_t top, uint16_t bot, int yMax) {
+  static struct { int16_t x, y; uint16_t period, phase; uint8_t size; } st[STAR_COUNT];
+  static bool rolled = false;
+  if (!rolled) {
+    for (int i = 0; i < STAR_COUNT; i++) {
+      int x, y;
+      do {  // inside the circle (centre 233,233 radius 215), clear of the bottom row
+        x = 20 + random(426); y = 24 + random(yMax - 24);
+      } while ((x - 233) * (x - 233) + (y - 233) * (y - 233) > 215 * 215);
+      st[i] = { (int16_t)x, (int16_t)y, (uint16_t)(1400 + random(2600)),
+                (uint16_t)random(4000), (uint8_t)(random(4) == 0 ? 2 : 1) };
+    }
+    rolled = true;
+  }
+  for (int i = 0; i < STAR_COUNT; i++) {
+    // triangle wave 0..8 over the period
+    int t = (int)((now + st[i].phase) % st[i].period) * 16 / st[i].period;
+    int b = t < 8 ? t : 16 - t;
+    int sy = st[i].y;
+    uint16_t sky = lerp565(top, bot, sy, HORIZON);
+    uint16_t c = lerp565(sky, C565(0xff, 0xff, 0xf0), 3 + b, 11);
+    int sz = st[i].size * 2;
+    gfx->fillRect(st[i].x, sy, sz, sz, c);
+    if (st[i].size == 2 && b >= 5) {  // sparkle cross
+      uint16_t d = lerp565(sky, c, 1, 2);
+      gfx->fillRect(st[i].x - 3, sy + 1, 10, 2, d);
+      gfx->fillRect(st[i].x + 1, sy - 3, 2, 10, d);
+    }
+  }
+}
+
+// Moon: soft halo, then a crescent painted row by row (moon disc minus a
+// shifted cut-out disc), so the dark side stays the halo and never pokes
+// outside the moon's outline.
+static void drawMoon(int cx, int cy, uint16_t sky) {
+  const int R = 26, CR = 22, cutX = cx + 12;
+  for (int i = 0; i < 4; i++)
+    gfx->fillCircle(cx, cy, 50 - i * 6, lerp565(sky, C565(0xb8, 0xc4, 0xe0), i + 1, 12));
+  uint16_t lit = C565(0xf2, 0xf0, 0xdc);
+  for (int dy = -R; dy <= R; dy++) {
+    int mw = (int)sqrtf((float)(R * R - dy * dy));
+    int x0 = cx - mw, x1 = cx + mw;                  // moon span on this row
+    if (abs(dy) >= CR) { gfx->fillRect(x0, cy + dy, x1 - x0 + 1, 1, lit); continue; }
+    int cw = (int)sqrtf((float)(CR * CR - dy * dy));
+    int c0 = cutX - cw;                                // cut-out span starts here
+    if (c0 > x0) gfx->fillRect(x0, cy + dy, min(c0, x1 + 1) - x0, 1, lit);
+    if (cutX + cw < x1) gfx->fillRect(cutX + cw + 1, cy + dy, x1 - cutX - cw, 1, lit);
+  }
+  uint16_t cr = C565(0xd6, 0xd6, 0xc2);              // craters, all inside the lit part
+  gfx->fillCircle(cx - 18, cy + 8, 3, cr);
+  gfx->fillCircle(cx - 20, cy - 8, 2, cr);
+  gfx->fillCircle(cx - 12, cy + 18, 2, cr);
 }
 
 void drawScene(uint8_t biome, uint32_t now, bool night) {
@@ -2063,14 +2238,16 @@ void drawScene(uint8_t biome, uint32_t now, bool night) {
 
   // sol o luna
   if (night) {
-    gfx->fillCircle(360, 78, 24, C565(0xe8, 0xee, 0xf5));
-    gfx->fillCircle(370, 72, 22, lerp565(top, bot, 78, HORIZON));  // crescent
-    for (auto &st : STARS) gfx->fillRect(st[0], st[1], 4, 4, UI_WHITE);
+    const int moonY = 122;   // clear of the header text above it
+    drawStars(now, top, bot, HORIZON - 10);
+    drawMoon(360, moonY, lerp565(top, bot, moonY, HORIZON));
   } else if (h < 18) {
-    gfx->fillCircle(360, 84, 26, h < 8 ? C565(0xff, 0xd9, 0x8a) : C565(0xff, 0xe7, 0x9f));
-    drawClouds(now, C565(0xff, 0xff, 0xff));
+    drawSun(360, 84, 24, h < 8 ? C565(0xff, 0xc8, 0x6a) : C565(0xff, 0xd9, 0x5c),
+            lerp565(top, bot, 84, HORIZON), now);
+    drawClouds(now, C565(0xff, 0xff, 0xff), lerp565(top, bot, 150, HORIZON) );
   } else {
-    gfx->fillCircle(233, HORIZON - 6, 34, C565(0xff, 0xf1, 0xc8));  // setting sun
+    drawSun(233, HORIZON - 6, 32, C565(0xff, 0xe6, 0xa0),
+            lerp565(top, bot, HORIZON - 6, HORIZON), now);  // setting sun
   }
 
   // beach sea: a strip of water over the sand
@@ -2126,10 +2303,7 @@ void renderStarterSelect() {
   gfx->fillScreen(RGB565_BLACK);
   gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
   const char *t = T(S_CHOOSE_STARTER);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(t) * 6, 68);
-  gfx->print(t);
+  uiTextFit(UIF_SMALL, CX, 82, t, UI_INK, 1, 300);
   for (int i = 0; i < starterCountShown(pet.region); i++) {
     int16_t d = starterOf(pet.region, i);
     const DexEntry &de = DEX_TBL[d];
@@ -2138,10 +2312,7 @@ void renderStarterSelect() {
     gfx->drawRoundRect(70, ry, 326, STARTER_ROW_H, 14, de.accent);
     const uint8_t *th = thumbs.get(d);     // starter thumbnail (if the SD is ready)
     if (th) drawThumb(th, 76, ry - 5, 3, false);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(3);
-    gfx->setCursor(178, ry + 24);
-    gfx->print(de.name);
+    uiTextFit(UIF_BIG, 178, ry + 45, de.name, UI_INK, 0, 208);
   }
   gfx->flush();
 }
@@ -2312,7 +2483,7 @@ void render() {
     const char *msg = (pet.ceremony == CER_FAREWELL) ? T(S_FAREWELL)
                       : (pet.ceremony == CER_RUNAWAY) ? T(S_RUNAWAY)
                                                       : T(S_GOODBYE);
-    drawHeader(d.name, d.accent, msg);
+    drawHeader(d.name, nameOnSky(d.accent), msg);
     drawCeremony();
     gfx->flush();
     return;
@@ -2328,18 +2499,13 @@ void render() {
       for (auto &c : CRACK2) gfx->fillRect(x + c[0] * s, y + c[1] * s, s, s, INK_K);
     if (pet.eggRarity() >= R_RARO) {
       const char *rar = (pet.eggRarity() == R_LEGENDARIO) ? T(S_EGG_LEGEND) : T(S_EGG_RARE);
-      gfx->setTextColor(pet.eggRarity() == R_LEGENDARIO ? UI_BAR_WARN : 0x4C98);
-      gfx->setTextSize(2);
-      gfx->setCursor(CX - cjkCols(rar) * 6, 316);
-      gfx->print(rar);
+      uiText(UIF_SMALL, CX, 316 + 14, rar,
+             pet.eggRarity() == R_LEGENDARIO ? UI_BAR_WARN : 0x4C98, 1);
     }
     char reg[24];
     snprintf(reg, sizeof(reg), T(S_POKEDEX_FMT), pet.registeredCount(), DEX_COUNT);
     gfx->fillRect(0, 312, 466, 154, gNight ? UI_BG_NIGHT : UI_BG_DAY);
-    gfx->setTextColor(inkColor());
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - cjkCols(reg) * 6, 344);
-    gfx->print(reg);
+    uiText(UIF_SMALL, CX, 344 + 14, reg, inkColor(), 1);
 
     // Which generation this egg comes from. It lives HERE rather than in the
     // settings screen because this is the only moment it does anything: the
@@ -2351,27 +2517,24 @@ void render() {
     char name[28];
     const char *base = pet.nick[0] ? pet.nick : d.name;
     snprintf(name, sizeof(name), T(S_NAME_FMT), pet.shiny ? "*" : "", base, pet.level());
-    drawHeader(name, gNight ? UI_INK_NIGHT : d.accent, statusMsg());
+    drawHeader(name, gNight ? UI_INK_NIGHT : nameOnSky(d.accent), statusMsg());
     drawStreakBadge();
     drawPet();
     drawBath();
     drawPoops();
+    drawStepPlate();
     // lower panel: clean base for bars and buttons over the landscape
     gfx->fillRect(0, 312, 466, 154, gNight ? UI_BG_NIGHT : UI_BG_DAY);
     drawBars();
     drawButtons();
+    drawUpHint();
     drawCelebration();
     if (pet.wantEvolveButton()) drawEvolveButton();        // red CTA: evolve
     else if (pet.canRunawayNow()) drawRunawayButton();     // gloomy CTA: runaway (neglect)
     else if (pet.wantFarewellButton()) drawFarewellButton();  // golden CTA: farewell
   }
 
-  if (pet.sleeping) {
-    gfx->setTextColor(UI_INK_NIGHT);
-    gfx->setTextSize(3);
-    gfx->setCursor(320, 130);
-    gfx->print("Zz");
-  }
+  if (pet.sleeping) drawSnore();
 
   // food picker
   if (feedMenuUntil) {
@@ -2396,17 +2559,11 @@ void render() {
       gfx->drawRoundRect(94, 168, 278, 152, 16, UI_INK);
       char q[28];
       snprintf(q, sizeof(q), T(S_RELEASE_FMT), DEX_TBL[pet.speciesId].name);
-      gfx->setTextColor(UI_INK);
-      gfx->setTextSize(2);
-      gfx->setCursor(CX - cjkCols(q) * 6, 196);
-      gfx->print(q);
+      uiTextFit(UIF_SMALL, CX, 196 + 14, q, UI_INK, 1, 258);
       gfx->fillRoundRect(118, 252, 100, 52, 12, UI_BAR_OK);
-      gfx->setTextColor(UI_WHITE);
-      gfx->setCursor(118 + (100 - (int)cjkCols(T(S_YES)) * 12) / 2, 270);
-      gfx->print(T(S_YES));
+      uiTextFit(UIF_SMALL, 118 + 50, 270 + 14, T(S_YES), UI_WHITE, 1, 92);
       gfx->fillRoundRect(248, 252, 100, 52, 12, UI_BAR_BAD);
-      gfx->setCursor(248 + (100 - (int)cjkCols(T(S_NO)) * 12) / 2, 270);
-      gfx->print(T(S_NO));
+      uiTextFit(UIF_SMALL, 248 + 50, 270 + 14, T(S_NO), UI_WHITE, 1, 92);
     }
   }
 
@@ -2425,10 +2582,7 @@ void render() {
       snprintf(b, sizeof(b), T(S_PARTY_JOINED), partyBannerName);
       gfx->fillRoundRect(53, 176, 360, 74, 16, UI_BAR_OK);
       gfx->drawRoundRect(53, 176, 360, 74, 16, UI_INK);
-      gfx->setTextColor(UI_WHITE);
-      gfx->setTextSize(2);
-      gfx->setCursor(CX - (int)cjkCols(b) * 6, 206);
-      gfx->print(b);
+      uiTextFit(UIF_SMALL, CX, 206 + 14, b, UI_WHITE, 1, 340);
     }
   }
 
@@ -2581,27 +2735,16 @@ void renderSack() {
     if (now > sackOverUntil) { sackOpen = false; return; }
     char b[20];
     snprintf(b, sizeof(b), T(S_HITS_FMT), sackHits);
-    gfx->setTextColor(ink);
-    gfx->setTextSize(4);
-    gfx->setCursor(CX - cjkCols(b) * 12, 150);
-    gfx->print(b);
+    uiTextFit(UIF_BIG, CX, 178, b, ink, 1, 340);
     char g[18];
     snprintf(g, sizeof(g), T(S_STR_GAIN_FMT), sackGain);
-    gfx->setTextColor(UI_BAR_BAD);
-    gfx->setTextSize(3);
-    gfx->setCursor(CX - cjkCols(g) * 9, 210);
-    gfx->print(g);
-    gfx->setTextSize(2);
+    uiTextFit(UIF_BIG, CX, 231, g, UI_BAR_BAD, 1, 340);
     if (sackNewHi && sackHits > 0) {
-      gfx->setTextColor(UI_BAR_WARN);
-      gfx->setCursor(CX - cjkCols(T(S_NEW_RECORD)) * 6, 256);
-      gfx->print(T(S_NEW_RECORD));
+      uiText(UIF_SMALL, CX, 270, T(S_NEW_RECORD), UI_BAR_WARN, 1);
     } else {
       char r[18];
       snprintf(r, sizeof(r), T(S_RECORD_FMT), pet.strHi);
-      gfx->setTextColor(ink);
-      gfx->setCursor(CX - cjkCols(r) * 6, 256);
-      gfx->print(r);
+      uiText(UIF_SMALL, CX, 270, r, ink, 1);
     }
     gfx->flush();
     return;
@@ -2631,19 +2774,14 @@ void renderSack() {
   // hit counter
   char buf[8];
   snprintf(buf, sizeof(buf), "%u", sackHits);
-  gfx->setTextColor(ink);
-  gfx->setTextSize(6);
-  gfx->setCursor(CX - cjkCols(buf) * 18, 268);
-  gfx->print(buf);
+  uiText(UIF_HUGE, CX, 310, buf, ink, 1);
 
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_HIT_FAST)) * 6, 322);
-  gfx->print(T(S_HIT_FAST));
+  uiTextFit(UIF_SMALL, CX, 336, T(S_HIT_FAST), ink, 1, 330);
 
   // time bar
   uint32_t left = sackUntil - now;
   int bw = 280, fw = (int)((uint32_t)bw * left / 10000);
-  gfx->fillRoundRect(CX - bw / 2, 350, bw, 16, 5, UI_TRACK);
+  gfx->fillRoundRect(CX - bw / 2, 350, bw, 16, 5, UI_TRACK_TEXT);
   if (fw > 2) gfx->fillRoundRect(CX - bw / 2, 350, fw, 16, 5, UI_BAR_OK);
 
   gfx->flush();
@@ -2662,7 +2800,7 @@ void drawGameScene() {
   for (int y = 0; y < hor; y += 8)
     gfx->fillRect(0, y, 466, 8, lerp565(top, bot, y, hor));
   if (night)
-    for (auto &st : STARS) gfx->fillRect(st[0], st[1], 4, 4, UI_WHITE);
+    drawStars(millis(), top, bot, 225);
   uint8_t bio = pet.isEgg() ? 0 : DEX_TBL[pet.speciesId].biome;
   uint16_t soil = BIOME_SOIL[bio < 6 ? bio : 0];
   if (night) soil = lerp565(soil, C565(0x16, 0x1c, 0x30), 9, 16);
@@ -2684,26 +2822,16 @@ void renderGame() {
     }
     char buf[22];
     snprintf(buf, sizeof(buf), T(S_SCORE_FMT), gameScore);
-    gfx->setTextColor(ink);
-    gfx->setTextSize(4);
-    gfx->setCursor(CX - cjkCols(buf) * 12, 160);
-    gfx->print(buf);
-    gfx->setTextSize(2);
+    uiTextFit(UIF_BIG, CX, 188, buf, ink, 1, 340);
     if (gameNewHi && gameScore > 0) {
-      gfx->setTextColor(UI_BAR_WARN);
-      gfx->setCursor(CX - cjkCols(T(S_NEW_RECORD)) * 6, 214);
-      gfx->print(T(S_NEW_RECORD));
+      uiText(UIF_SMALL, CX, 228, T(S_NEW_RECORD), UI_BAR_WARN, 1);
     } else {
       char rec[20];
       snprintf(rec, sizeof(rec), T(S_RECORD_FMT), pet.gameHi);
-      gfx->setTextColor(ink);
-      gfx->setCursor(CX - cjkCols(rec) * 6, 214);
-      gfx->print(rec);
+      uiText(UIF_SMALL, CX, 228, rec, ink, 1);
     }
     const char *msg = gameScore >= 10 ? T(S_GREAT_JOY) : T(S_PLUS_JOY);
-    gfx->setTextColor(ink);
-    gfx->setCursor(CX - cjkCols(msg) * 6, 250);
-    gfx->print(msg);
+    uiTextFit(UIF_SMALL, CX, 264, msg, ink, 1, 340);
     gfx->flush();
     return;
   }
@@ -2714,18 +2842,13 @@ void renderGame() {
   // score, record and lives
   char buf[8];
   snprintf(buf, sizeof(buf), "%u", gameScore);
-  gfx->setTextColor(ink);
-  gfx->setTextSize(4);
-  gfx->setCursor(CX - cjkCols(buf) * 12, 30);
-  gfx->print(buf);
+  uiText(UIF_BIG, CX, 58, buf, ink, 1);
   char rec[12];
   snprintf(rec, sizeof(rec), T(S_REC_FMT), pet.gameHi);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(rec) * 6, 76);
-  gfx->print(rec);
+  uiText(UIF_SMALL, CX, 90, rec, ink, 1);
   for (int i = 0; i < 3; i++) {
     if (i < 3 - gameMisses) gfx->fillCircle(180 + i * 28, 104, 6, UI_BAR_BAD);
-    else gfx->drawCircle(180 + i * 28, 104, 6, UI_TRACK);
+    else gfx->drawCircle(180 + i * 28, 104, 6, UI_TRACK_TEXT);
   }
   // The clock, drawn like the bag's and the reaction test's so all three games
   // read the same way. Thin and near the rim: the middle belongs to the ball.
@@ -2733,7 +2856,7 @@ void renderGame() {
     uint32_t now2 = millis();
     uint32_t left = (gameUntil > now2) ? gameUntil - now2 : 0;
     int bw = 200, fw = (int)((uint32_t)bw * left / GAME_MS);
-    gfx->fillRoundRect(CX - bw / 2, 124, bw, 10, 4, UI_TRACK);
+    gfx->fillRoundRect(CX - bw / 2, 124, bw, 10, 4, UI_TRACK_TEXT);
     if (fw > 2)
       gfx->fillRoundRect(CX - bw / 2, 124, fw, 10, 4,
                          left < 5000 ? UI_BAR_WARN : UI_BAR_OK);
@@ -2781,10 +2904,7 @@ void renderGame() {
 #define IV_NONE 0xFF
 void drawCardStat(int y, const char *label, uint16_t val, uint16_t maxBar,
                   uint16_t color, uint8_t iv) {
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(70, y);
-  gfx->print(label);
+  uiTextFit(UIF_SMALL, 70, y + 14, label, UI_INK, 0, 56);
   // The bar used to start at 112, which leaves 42px for a label drawn at size 2
   // -- three characters. BOND (EN), LIEN (FR) and LACO (PT) are four, so the
   // label ran under the bar. 132 fits five, with the bar narrowed to keep the
@@ -2792,19 +2912,16 @@ void drawCardStat(int y, const char *label, uint16_t val, uint16_t maxBar,
   int bw = 130;
   int fw = (int)val * bw / maxBar;
   if (fw > bw) fw = bw;
-  gfx->fillRoundRect(132, y + 2, bw, 11, 3, UI_TRACK);
+  gfx->fillRoundRect(132, y + 2, bw, 11, 3, UI_TRACK_TEXT);
   if (fw > 2) gfx->fillRoundRect(132, y + 2, fw, 11, 3, color);
   char num[8];
   snprintf(num, sizeof(num), "%u", val);
-  gfx->setCursor(272, y);
-  gfx->print(num);
+  uiText(UIF_SMALL, 272, y + 14, num, UI_INK, 0);
   if (iv != IV_NONE) {
     char b[10];
     snprintf(b, sizeof(b), T(S_IV_FMT), iv);
     // a perfect IV is highlighted: it is the stroke of luck the player is after
-    gfx->setTextColor(iv >= 31 ? UI_BAR_WARN : UI_TRACK);
-    gfx->setCursor(344, y);
-    gfx->print(b);
+    uiText(UIF_SMALL, 344, y + 14, b, iv >= 31 ? UI_BAR_WARN : UI_TRACK_TEXT, 0);
   }
 }
 
@@ -2813,7 +2930,8 @@ void drawCardStat(int y, const char *label, uint16_t val, uint16_t maxBar,
 // there is no time zone to manage. Preserves the day (does not break streak/age).
 
 void openClock() {
-  uint32_t e = pet.lastSeenEpoch ? pet.lastSeenEpoch : rtcEpoch();
+  uint32_t e = rtcEpoch();
+  if (!e) e = pet.lastSeenEpoch;
   clockH = (e / 3600) % 24;
   clockM = (e / 60) % 60;
   settingsPage = SET_TIME;
@@ -2821,7 +2939,8 @@ void openClock() {
 }
 
 void applyClock() {
-  uint32_t base = pet.lastSeenEpoch ? pet.lastSeenEpoch : rtcEpoch();
+  uint32_t base = rtcEpoch();
+  if (!base) base = pet.lastSeenEpoch;
   uint32_t e = (base / 86400) * 86400 + (uint32_t)clockH * 3600 + (uint32_t)clockM * 60;
   rtcSetEpoch(e);
   pet.setClock(e);
@@ -2831,10 +2950,7 @@ void applyClock() {
 void drawClockBtn(int x, int y, const char *l) {
   gfx->fillRoundRect(x, y, 58, 58, 12, UI_WHITE);
   gfx->drawRoundRect(x, y, 58, 58, 12, UI_INK);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(4);
-  gfx->setCursor(x + 17, y + 15);
-  gfx->print(l);
+  uiText(UIF_BIG, x + 29, y + 42, l, UI_INK, 1);
 }
 
 // ---------- settings: four pages, swiped left/right ----------
@@ -2891,10 +3007,7 @@ static void langCell(int i, int &x, int &y) {
 }
 
 static void settingsTitle(const char *s) {
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - (int)cjkCols(s) * 9, 44);
-  gfx->print(s);
+  uiTextFit(UIF_BIG, CX, 65, s, UI_INK, 1, 300);
 }
 
 // One slider for volume (0..100) and brightness (1..10). The knob centre runs
@@ -2913,7 +3026,7 @@ static int sliderValue(int x, int lo, int hi) {
 static void drawSlider(int v, int lo, int hi) {
   int by = VOL_ROW_Y + 28;
   int kx = sliderKnobX(v, lo, hi);
-  gfx->fillRoundRect(VOLS_BAR_X, by, VOLS_BAR_W, VOLS_BAR_H, 12, UI_TRACK);
+  gfx->fillRoundRect(VOLS_BAR_X, by, VOLS_BAR_W, VOLS_BAR_H, 12, UI_TRACK_TEXT);
   gfx->fillRoundRect(VOLS_BAR_X, by, kx - VOLS_BAR_X, VOLS_BAR_H, 12, UI_BAR_OK);
   gfx->fillCircle(kx, by + VOLS_BAR_H / 2, VOLS_BAR_H / 2, UI_WHITE);   // the knob
   gfx->drawCircle(kx, by + VOLS_BAR_H / 2, VOLS_BAR_H / 2, UI_INK);
@@ -2926,21 +3039,24 @@ void renderClock() {
   if (settingsPage == SET_TIME) {
     settingsTitle(T(S_SET_TIME));
     char t[8];
-    snprintf(t, sizeof(t), "%02d:%02d", clockH, clockM);
-    gfx->setTextSize(7);
-    gfx->setCursor(CX - 105, 108);
-    gfx->print(t);
+    // 12-hour display; clockH stays 0..23 underneath so the +/- buttons and
+    // the stored epoch are unchanged
+    snprintf(t, sizeof(t), "%02d:%02d", clockH % 12 == 0 ? 12 : clockH % 12, clockM);
+    {
+      // time block (digits + AM/PM) centred as a whole
+      const char *ap = clockH < 12 ? "AM" : "PM";
+      int tw = uiTextWidth(UIF_HUGE, t), aw = uiTextWidth(UIF_BIG, ap);
+      int x0 = CX - (tw + 10 + aw) / 2;
+      uiText(UIF_HUGE, x0, 160, t, UI_INK, 0);
+      uiText(UIF_BIG, x0 + tw + 10, 160, ap, UI_INK, 0);
+    }
 
     drawClockBtn(104, 190, "-");  // hora -
     drawClockBtn(170, 190, "+");  // hora +
     drawClockBtn(252, 190, "-");  // min -
     drawClockBtn(318, 190, "+");  // min +
-    gfx->setTextSize(2);
-    gfx->setTextColor(UI_TRACK);
-    gfx->setCursor(120, 256);
-    gfx->print(T(S_HOUR));
-    gfx->setCursor(276, 256);
-    gfx->print(T(S_MIN));
+    uiTextFit(UIF_SMALL, 166, 270, T(S_HOUR), UI_TRACK_TEXT, 1, 120);
+    uiTextFit(UIF_SMALL, 314, 270, T(S_MIN), UI_TRACK_TEXT, 1, 120);
   } else if (settingsPage == SET_VOLUME) {
     settingsTitle(T(S_SET_VOLUME));
     // the switch is the master; the level below is how loud it is when on,
@@ -2949,55 +3065,37 @@ void renderClock() {
     const char *sl = snd ? T(S_SND_ON) : T(S_SND_OFF);
     gfx->fillRoundRect(SND_SW_X, SND_SW_Y, SND_SW_W, SND_SW_H, 12, snd ? UI_BAR_OK : UI_WHITE);
     gfx->drawRoundRect(SND_SW_X, SND_SW_Y, SND_SW_W, SND_SW_H, 12, UI_INK);
-    gfx->setTextColor(snd ? UI_BG_DAY : UI_INK);
-    gfx->setTextSize(3);
-    gfx->setCursor(SND_SW_X + (SND_SW_W - (int)cjkCols(sl) * 18) / 2, SND_SW_Y + 15);
-    gfx->print(sl);
+    uiTextFit(UIF_MID, SND_SW_X + SND_SW_W / 2, uiMidY(UIF_MID, SND_SW_Y, SND_SW_H), sl, snd ? UI_BG_DAY : UI_INK, 1, SND_SW_W - 12);
 
     // TEST needs the sound on; at volume 0 it is allowed and simply silent
-    gfx->fillRoundRect(SND_TEST_X, SND_SW_Y, SND_SW_W, SND_SW_H, 12, snd ? UI_WHITE : UI_TRACK);
+    gfx->fillRoundRect(SND_TEST_X, SND_SW_Y, SND_SW_W, SND_SW_H, 12, snd ? UI_WHITE : UI_TRACK_TEXT);
     gfx->drawRoundRect(SND_TEST_X, SND_SW_Y, SND_SW_W, SND_SW_H, 12, UI_INK);
-    gfx->setTextColor(snd ? UI_INK : 0x8410);
-    gfx->setTextSize(3);
-    gfx->setCursor(SND_TEST_X + (SND_SW_W - (int)cjkCols(T(S_TEST)) * 18) / 2, SND_SW_Y + 15);
-    gfx->print(T(S_TEST));
+    uiTextFit(UIF_MID, SND_TEST_X + SND_SW_W / 2, uiMidY(UIF_MID, SND_SW_Y, SND_SW_H), T(S_TEST), snd ? UI_INK : 0x8410, 1, SND_SW_W - 12);
 
     uint8_t v = audioVolume();
     for (int i = 0; i < 2; i++) {
       int bx = i ? VOLS_PLUS_X : VOLS_MINUS_X;
       bool live = i ? (v < 100) : (v > 0);
-      gfx->fillRoundRect(bx, VOL_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, live ? UI_WHITE : UI_TRACK);
+      gfx->fillRoundRect(bx, VOL_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, live ? UI_WHITE : UI_TRACK_TEXT);
       gfx->drawRoundRect(bx, VOL_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, UI_INK);
-      gfx->setTextColor(live ? UI_INK : 0x8410);
-      gfx->setTextSize(4);
-      gfx->setCursor(bx + VOL_BTN_W / 2 - 12, VOL_ROW_Y + 17);
-      gfx->print(i ? "+" : "-");
+      uiText(UIF_BIG, bx + VOL_BTN_W / 2, VOL_ROW_Y + 44, i ? "+" : "-", live ? UI_INK : 0x8410, 1);
     }
     char vl[16];
     snprintf(vl, sizeof(vl), T(S_VOL_FMT), v);
-    gfx->setTextColor(v ? UI_INK : UI_TRACK);
-    gfx->setTextSize(2);
-    gfx->setCursor(VOLS_BAR_X + (VOLS_BAR_W - (int)cjkCols(vl) * 12) / 2, VOL_ROW_Y + 4);
-    gfx->print(vl);
+    uiTextFit(UIF_SMALL, VOLS_BAR_X + VOLS_BAR_W / 2, VOL_ROW_Y + 20, vl, v ? UI_INK : UI_TRACK_TEXT, 1, VOLS_BAR_W);
     drawSlider(v, 0, 100);
   } else if (settingsPage == SET_BRIGHT) {
     settingsTitle(T(S_SET_BRIGHT));
     for (int i = 0; i < 2; i++) {
       int bx = i ? VOLS_PLUS_X : VOLS_MINUS_X;
       bool live = i ? (gBright < 10) : (gBright > 1);
-      gfx->fillRoundRect(bx, BRI_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, live ? UI_WHITE : UI_TRACK);
+      gfx->fillRoundRect(bx, BRI_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, live ? UI_WHITE : UI_TRACK_TEXT);
       gfx->drawRoundRect(bx, BRI_ROW_Y, VOL_BTN_W, VOL_BTN_H, 12, UI_INK);
-      gfx->setTextColor(live ? UI_INK : 0x8410);
-      gfx->setTextSize(4);
-      gfx->setCursor(bx + VOL_BTN_W / 2 - 12, BRI_ROW_Y + 17);
-      gfx->print(i ? "+" : "-");
+      uiText(UIF_BIG, bx + VOL_BTN_W / 2, BRI_ROW_Y + 44, i ? "+" : "-", live ? UI_INK : 0x8410, 1);
     }
     char bl[8];
     snprintf(bl, sizeof(bl), "%u/10", gBright);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(4);
-    gfx->setCursor(CX - (int)cjkCols(bl) * 12, 130);
-    gfx->print(bl);
+    uiText(UIF_BIG, CX, 158, bl, UI_INK, 1);
     drawSlider(gBright, 1, 10);
   } else if (settingsPage == SET_LANG) {
     settingsTitle(T(S_SET_LANG));
@@ -3008,23 +3106,21 @@ void renderClock() {
       bool on = (lg == gLang);
       gfx->fillRoundRect(x, y, LANG_CELL_W, LANG_CELL_H, 12, on ? UI_BAR_OK : UI_WHITE);
       gfx->drawRoundRect(x, y, LANG_CELL_W, LANG_CELL_H, 12, UI_INK);
-      gfx->setTextColor(on ? UI_BG_DAY : UI_INK);
-      gfx->setTextSize(2);
-      gfx->setCursor(x + (LANG_CELL_W - (int)cjkCols(LANG_NAMES[lg]) * 12) / 2,
-                     y + LANG_CELL_H / 2 - 8);
-      gfx->print(LANG_NAMES[lg]);
+      uiTextFit(UIF_SMALL, x + LANG_CELL_W / 2, y + LANG_CELL_H / 2 + 7, LANG_NAMES[lg],
+                on ? UI_BG_DAY : UI_INK, 1, LANG_CELL_W - 12);
     }
   } else {
     settingsTitle(T(S_ABOUT));
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(4);
-    gfx->setCursor(CX - 96, 140);   // "TamaPoke": 8 chars at 24 px
-    gfx->print("TamaPoke");
+    drawLogo(233);
+    if (pet.ownerName[0]) {
+      char own[24];
+      snprintf(own, sizeof(own), "%s's", pet.ownerName);
+      // just above the logo
+      uiTextFit(UIF_BIG, CX, 233 - LOGO_H / 2 - 24 - 10 + 21, own, UI_INK, 1, 300);
+    }
     char ver[16];
     snprintf(ver, sizeof(ver), "v%s", FW_VERSION);
-    gfx->setTextSize(3);
-    gfx->setCursor(CX - (int)cjkCols(ver) * 9, 200);
-    gfx->print(ver);
+    uiText(UIF_BIG, CX, 306, ver, UI_INK, 1);
   }
 
   // page dots, like the player card's
@@ -3035,15 +3131,9 @@ void renderClock() {
   }
 
   gfx->fillRoundRect(SET_OK_X, SET_OK_Y, SET_OK_W, SET_OK_H, 14, UI_BAR_OK);
-  gfx->setTextColor(UI_BG_DAY);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - 18, SET_OK_Y + 12);
-  gfx->print("OK");
+  uiText(UIF_BIG, CX, SET_OK_Y + 34, "OK", UI_BG_DAY, 1);
 
-  gfx->setTextColor(UI_TRACK_TEXT);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_CLOCK_CANCEL)) * 6, 420);
-  gfx->print(T(S_CLOCK_CANCEL));
+  uiTextFit(UIF_SMALL, CX, 434, T(S_CLOCK_CANCEL), UI_TRACK_TEXT, 1, 220);
   gfx->flush();
 }
 
@@ -3130,6 +3220,80 @@ void clockTap(int16_t x, int16_t y) {
   }
 }
 
+// The band between radii r0 and r1, from a0 to a1 degrees above the panel's
+// 9 o'clock point, as a strip of triangles. The panel is round, so a plate that
+// follows its edge fits where a rectangle would clip.
+static void fillArcBand(int r0, int r1, float a0, float a1, uint16_t col) {
+  const float RAD = 3.14159265f / 180.0f, STEP = 2.0f;
+  for (float a = a0; a < a1; a += STEP) {
+    float b = (a + STEP < a1) ? a + STEP : a1;
+    float ca = cosf(a * RAD), sa = sinf(a * RAD), cb = cosf(b * RAD), sb = sinf(b * RAD);
+    int ox0 = CX - (int)(r1 * ca), oy0 = CY - (int)(r1 * sa);
+    int ix0 = CX - (int)(r0 * ca), iy0 = CY - (int)(r0 * sa);
+    int ox1 = CX - (int)(r1 * cb), oy1 = CY - (int)(r1 * sb);
+    int ix1 = CX - (int)(r0 * cb), iy1 = CY - (int)(r0 * sb);
+    gfx->fillTriangle(ox0, oy0, ix0, iy0, ox1, oy1, col);
+    gfx->fillTriangle(ix0, iy0, ix1, iy1, ox1, oy1, col);
+  }
+}
+
+// One shoe print: a rounded sole and a separate heel, x/y is the centre.
+static void drawFootprint(int x, int y, uint16_t col) {
+  gfx->fillRoundRect(x - 4, y - 8, 8, 10, 3, col);
+  gfx->fillRoundRect(x - 3, y + 4, 6, 4, 2, col);
+}
+
+// Today's steps, on a quarter-ring plate hugging the left edge above the party
+// chevron. The number is the point; the arc along the rim fills toward
+// STEP_GOAL and turns gold when it is met. No label text: a footprint says
+// "steps" in every language without a row in the string table.
+void drawStepPlate() {
+  const float A0 = 6.0f, A1 = 42.0f;     // degrees above 9 o'clock, bottom to top
+  const int R_IN = 166, R_OUT = 234;
+  uint32_t steps = pet.stepsToday();
+  uint16_t ink = inkColor();
+  fillArcBand(R_IN, R_OUT, A0, A1, gNight ? C565(0x1c, 0x26, 0x44) : UI_WHITE);
+
+  // outline: the inner arc and the two radial edges (the outer one is the panel's own)
+  const float RAD = 3.14159265f / 180.0f;
+  int px = 0, py = 0;
+  for (float a = A0; a <= A1 + 0.1f; a += 2.0f) {
+    int x = CX - (int)(R_IN * cosf(a * RAD)), y = CY - (int)(R_IN * sinf(a * RAD));
+    if (a > A0) gfx->drawLine(px, py, x, y, ink);
+    px = x; py = y;
+  }
+  const float edges[2] = {A0, A1};
+  for (int i = 0; i < 2; i++) {
+    float c = cosf(edges[i] * RAD), sn = sinf(edges[i] * RAD);
+    gfx->drawLine(CX - (int)(R_IN * c), CY - (int)(R_IN * sn),
+                  CX - (int)(R_OUT * c), CY - (int)(R_OUT * sn), ink);
+  }
+
+  // progress along the rim
+  const float P0 = A0 + 4.0f, P1 = A1 - 4.0f;
+  fillArcBand(224, 232, P0, P1, UI_TRACK_TEXT);
+  uint32_t capped = steps > STEP_GOAL ? STEP_GOAL : steps;
+  float pe = P0 + (P1 - P0) * capped / STEP_GOAL;
+  if (pe > P0 + 0.5f) fillArcBand(224, 232, P0, pe, steps >= STEP_GOAL ? UI_BAR_WARN : UI_BAR_OK);
+
+  // footprints at the top of the band, then the digits stacked down it, most
+  // significant first. Each digit sits where the text radius meets its row, so the
+  // column bends with the panel's edge and costs ~40 px of width instead of the
+  // 60 a flat row of five needs. They stay upright: the font cannot rotate.
+  drawFootprint(66, 100, ink);
+  drawFootprint(78, 106, ink);
+  char s[8];
+  int n = snprintf(s, sizeof(s), "%lu", (unsigned long)steps);
+  const int PITCH = 17, R_TXT = 194;
+  for (int i = 0; i < n; i++) {
+    int cy = 162 + (int)((i - (n - 1) / 2.0f) * PITCH);
+    int dy = CY - cy;
+    int cx = CX - (int)sqrtf((float)(R_TXT * R_TXT - dy * dy));
+    char c[2] = {s[i], 0};
+    uiText(UIF_SMALL, cx, cy - 8 + 14, c, ink, 1);   // centred on the column
+  }
+}
+
 // flame + streak number at the top left
 void drawStreakBadge() {
   if (pet.streak < 1) return;
@@ -3138,10 +3302,7 @@ void drawStreakBadge() {
   gfx->fillTriangle(x + 8, y + 7, x + 4, y + 17, x + 12, y + 17, UI_BAR_WARN);
   char s[6];
   snprintf(s, sizeof(s), "%u", pet.streak);
-  gfx->setTextColor(inkColor());
-  gfx->setTextSize(2);
-  gfx->setCursor(x + 22, y + 2);
-  gfx->print(s);
+  uiText(UIF_SMALL, x + 22, y + 2 + 14, s, inkColor(), 0);
 }
 
 // temporary banner: new medal or streak milestone
@@ -3160,24 +3321,16 @@ void drawCelebration() {
   if (!l1) return;
   gfx->fillRoundRect(73, 150, 320, 96, 16, UI_BAR_WARN);
   gfx->drawRoundRect(73, 150, 320, 96, 16, UI_INK);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - cjkCols(l1) * 9, 176);
-  gfx->print(l1);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(l2) * 6, 212);
-  gfx->print(l2);
+  uiTextFit(UIF_BIG, CX, 176 + 21, l1, UI_INK, 1, 296);
+  if (l2) uiTextFit(UIF_SMALL, CX, 212 + 14, l2, UI_INK, 1, 296);
 }
 
 // medals on the card: badge with label, coloured if earned
 void drawMedalBadge(int x, int y, int i) {
   bool got = pet.hasMedal(1 << i);
-  gfx->fillRoundRect(x, y, 100, 24, 6, got ? UI_BAR_OK : UI_TRACK);
-  if (!got) gfx->drawRoundRect(x, y, 100, 24, 6, UI_TRACK);
-  gfx->setTextColor(got ? UI_BG_DAY : 0x9492);
-  gfx->setTextSize(2);
-  gfx->setCursor(x + (100 - (int)cjkCols(medalLabel(i)) * 12) / 2, y + 5);
-  gfx->print(medalLabel(i));
+  gfx->fillRoundRect(x, y, 100, 24, 6, got ? UI_BAR_OK : UI_TRACK_TEXT);
+  if (!got) gfx->drawRoundRect(x, y, 100, 24, 6, UI_TRACK_TEXT);
+  uiTextFit(UIF_SMALL, x + 50, y + 18, medalLabel(i), got ? UI_BG_DAY : 0x9492, 1, 92);
 }
 
 // page 0: profile (big portrait, identity, streak, bond, berry)
@@ -3186,19 +3339,13 @@ void renderCardProfile() {
   const char *nm = pet.nick[0] ? pet.nick : d.name;
   char head[26];
   snprintf(head, sizeof(head), T(S_NAME_FMT), pet.shiny ? "*" : "", nm, pet.level());
-  gfx->setTextColor(d.accent);
-  // auto-encoge: a tamano 3 los nombres largos no caben en la franja estrecha de
-  // arriba de la pantalla redonda, asi que se cortaban por el borde
-  int hlen = cjkCols(head);
-  int hts = (hlen <= 11) ? 3 : 2;
-  gfx->setTextSize(hts);
-  gfx->setCursor(CX - hlen * (hts == 3 ? 9 : 6), hts == 3 ? 34 : 40);
-  gfx->print(head);
+  // long names do not fit the narrow strip at the top of the round panel, so
+  // uiTextFit steps down to the small font
+  uiTextFit(UIF_BIG, CX, 56, head, d.accent, 1, 230);
   if (pet.nick[0]) {  // real species under the nickname
-    gfx->setTextColor(UI_TRACK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - (cjkCols(d.name) + 2) * 6, 64);
-    gfx->printf("(%s)", d.name);
+    char sp[32];
+    snprintf(sp, sizeof(sp), "(%s)", d.name);
+    uiText(UIF_SMALL, CX, 82, sp, UI_TRACK_TEXT, 1);
   }
 
   // large animated portrait
@@ -3210,10 +3357,7 @@ void renderCardProfile() {
   gfx->fillTriangle(sx + 8, sy + 7, sx + 4, sy + 18, sx + 12, sy + 18, UI_BAR_WARN);
   char rl[30];
   snprintf(rl, sizeof(rl), T(S_STREAK_FMT), pet.streak, pet.bestStreak);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(sx + 24, sy + 2);
-  gfx->print(rl);
+  uiText(UIF_SMALL, sx + 24, sy + 18, rl, UI_INK, 0);
 
   drawCardStat(258, T(S_VIN), pet.bond, 100, C565(0xd4, 0x52, 0x7e), IV_NONE);
 
@@ -3224,22 +3368,87 @@ void renderCardProfile() {
   char info[40];
   snprintf(info, sizeof(info), T(S_INFO_FMT), berry,
            (unsigned long)(pet.ageMinutes / 1440));
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(info) * 6, 296);
-  gfx->print(info);
+  uiTextFit(UIF_SMALL, CX, 312, info, UI_INK, 1, 300);
 
-  gfx->setTextColor(UI_TRACK);
-  gfx->setCursor(CX - cjkCols(T(S_RENAME_HINT)) * 6, 332);
-  gfx->print(T(S_RENAME_HINT));
+  uiTextFit(UIF_SMALL, CX, 348, T(S_RENAME_HINT), UI_TRACK_TEXT, 1, 260);
+}
+
+// Antialiased text in the rounded UI font (uifont.h, ASCII only). Each pixel is
+// blended against what is already on the canvas, so it sits on any background.
+// `align`: 0 = x is the left edge, 1 = centred on x, 2 = right edge. `y` is the
+// BASELINE. zh/ko and anything outside ASCII must keep using the 5x7 path.
+static int uiFallbackSize(const UiFont &f) {
+  return (&f == &UIF_HUGE) ? 6 : (&f == &UIF_BIG || &f == &UIF_MID) ? 3 : (&f == &UIF_TINY) ? 1 : 2;
+}
+
+int uiTextWidth(const UiFont &f, const char *s) {
+  for (const char *c = s; *c; c++)       // zh/ko run on the 5x7 + CJK path
+    if ((uint8_t)*c >= 127) return (int)cjkCols(s) * 6 * uiFallbackSize(f);
+  int w = 0;
+  for (; *s; s++)
+    if (*s >= 32 && *s < 127) w += f.g[*s - 32].adv;
+  return w;
+}
+
+void uiText(const UiFont &f, int x, int y, const char *s, uint16_t color, int align) {
+  for (const char *c = s; *c; c++)
+    if ((uint8_t)*c >= 127) {          // zh/ko: stay on the 5x7 + CJK path
+      int sz = uiFallbackSize(f);
+      int cw = (int)cjkCols(s) * 6 * sz;
+      gfx->setTextColor(color);
+      gfx->setTextSize(sz);
+      gfx->setCursor(align == 1 ? x - cw / 2 : align == 2 ? x - cw : x, y - 7 * sz);
+      gfx->print(s);
+      return;
+    }
+  int w = uiTextWidth(f, s);
+  if (align == 1) x -= w / 2;
+  else if (align == 2) x -= w;
+  const uint16_t *fb = gfx->getFramebuffer();
+  const int fr = color >> 11, fg = (color >> 5) & 63, fbl = color & 31;
+  for (; *s; s++) {
+    if (*s < 32 || *s >= 127) continue;
+    const UiGlyph &g = f.g[*s - 32];
+    for (int j = 0; j < g.h; j++) {
+      for (int i = 0; i < g.w; i++) {
+        int n = j * g.w + i;
+        uint8_t a = (f.bits[g.off + (n >> 1)] >> ((n & 1) ? 0 : 4)) & 15;
+        if (!a) continue;
+        int px = x + g.xo + i, py = y + g.yo + j;
+        if (px < 0 || py < 0 || px >= LCD_WIDTH || py >= LCD_HEIGHT) continue;
+        uint16_t bg = fb[(size_t)py * LCD_WIDTH + px];
+        uint16_t c = bg;
+        if (a == 15) c = color;
+        else {
+          int r = (bg >> 11) + (fr - (bg >> 11)) * a / 15;
+          int gg = ((bg >> 5) & 63) + (fg - ((bg >> 5) & 63)) * a / 15;
+          int b = (bg & 31) + (fbl - (bg & 31)) * a / 15;
+          c = (uint16_t)(r << 11 | gg << 5 | b);
+        }
+        gfx->drawPixel(px, py, c);
+      }
+    }
+    x += g.adv;
+  }
+}
+
+// Baseline that vertically centres a cap-height line of font f in a box of
+// height h whose top is y (rows, buttons).
+int uiMidY(const UiFont &f, int y, int h) { return y + (h + f.ascent * 7 / 10) / 2; }
+
+// Same as uiText, but steps down to UIF_SMALL when the string would be wider
+// than maxW px (long nicknames, translated labels). Returns the width drawn.
+int uiTextFit(const UiFont &f, int x, int y, const char *s, uint16_t color, int align, int maxW) {
+  const UiFont *use = &f;                    // step down: given font, SMALL, TINY
+  if (uiTextWidth(*use, s) > maxW) use = &UIF_SMALL;
+  if (uiTextWidth(*use, s) > maxW) use = &UIF_TINY;
+  uiText(*use, x, y, s, color, align);
+  return uiTextWidth(*use, s);
 }
 
 // page 1: combat (4 bars + train button)
 void renderCardStats() {
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - cjkCols(T(S_BATTLE)) * 9, 44);
-  gfx->print(T(S_BATTLE));
+  uiText(UIF_BIG, CX, 86, T(S_BATTLE), UI_INK, 1);
 
   // typing, in the accent colour of the species (English in every language,
   // same as the species names themselves)
@@ -3247,19 +3456,69 @@ void renderCardStats() {
   char ty[24];
   if (de.type2 == T_NONE) snprintf(ty, sizeof(ty), "%s", typeName(de.type1));
   else snprintf(ty, sizeof(ty), "%s/%s", typeName(de.type1), typeName(de.type2));
-  gfx->setTextColor(de.accent);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(ty) * 6, 76);
-  gfx->print(ty);
+  uiText(UIF_SMALL, CX, 124, ty, de.accent, 1);
 
-  // 360 as the bar cap: at level 73 (end of cycle) the highest stat in the whole
-  // dex is CHANSEY's vitality (355). The previous 260 already overflowed.
-  drawCardStat(104, T(S_STAT_ATK), pet.atkStat(), 360, UI_BAR_BAD, pet.ivAtk);
-  drawCardStat(144, T(S_STAT_DEF), pet.defStat(), 360, 0x4C98, pet.ivDef);
-  drawCardStat(184, T(S_STAT_SPE), pet.speStat(), 360, UI_BAR_WARN, pet.ivSpe);
-  drawCardStat(224, T(S_STAT_VIT), pet.vitStat(), 360, UI_BAR_OK, pet.ivHp);
-  drawCardStat(264, T(S_STAT_WGT), pet.weight, 100, 0xB3C8, IV_NONE);
-
+  // Hexagon radar of all six combat stats, HP at the top and clockwise from
+  // there like the games' summary screen. 300 is the scale cap: a typical
+  // creature sits at 100-250, and a stat above it just touches the rim.
+  struct Spoke { const char *label; uint16_t val; uint8_t iv; };
+  const Spoke sp[6] = {
+    {T(S_STAT_VIT), pet.vitStat(), pet.ivHp},
+    {T(S_STAT_ATK), pet.atkStat(), pet.ivAtk},
+    {T(S_STAT_DEF), pet.defStat(), pet.ivDef},
+    {T(S_STAT_SPE), pet.speStat(), pet.ivSpe},
+    {"S.DEF",       pet.spdStat(), pet.ivDef},   // special reuses the physical IV
+    {"S.ATK",       pet.spaStat(), pet.ivAtk},
+  };
+  const int hx = CX, hy = 250, hr = 66;
+  float ca[6], sa[6];
+  for (int i = 0; i < 6; i++) {
+    float a = -1.5708f + i * 1.0472f;
+    ca[i] = cosf(a); sa[i] = sinf(a);
+  }
+  int px[6], py[6];
+  for (int i = 0; i < 6; i++) {
+    float f = sp[i].val / 300.0f;
+    if (f > 1.0f) f = 1.0f;
+    if (f < 0.15f) f = 0.15f;                           // keep a tiny stat visible
+    px[i] = hx + (int)(ca[i] * hr * f);
+    py[i] = hy + (int)(sa[i] * hr * f);
+  }
+  // tint = the accent half-mixed into the page colour, so the shape reads as
+  // see-through (RGB565 has no alpha, so blend per channel)
+  const uint16_t acc = DEX_TBL[pet.speciesId].accent;
+  const uint16_t pg = gNight ? UI_BG_NIGHT : UI_BG_DAY;
+  const uint16_t fillc = (uint16_t)((((acc >> 11) + (pg >> 11)) / 2) << 11 |
+                                    ((((acc >> 5) & 63) + ((pg >> 5) & 63)) / 2) << 5 |
+                                    (((acc & 31) + (pg & 31)) / 2));
+  for (int i = 0; i < 6; i++) {
+    int j = (i + 1) % 6;
+    gfx->fillTriangle(hx, hy, px[i], py[i], px[j], py[j], fillc);
+  }
+  // grid goes on TOP of the fill, so the web shows through it
+  for (int ring = 1; ring <= 3; ring++) {            // grid rings at 1/3, 2/3, full
+    int r = hr * ring / 3;
+    for (int i = 0; i < 6; i++) {
+      int j = (i + 1) % 6;
+      gfx->drawLine(hx + (int)(ca[i] * r), hy + (int)(sa[i] * r),
+                    hx + (int)(ca[j] * r), hy + (int)(sa[j] * r), UI_TRACK_TEXT);
+    }
+  }
+  for (int i = 0; i < 6; i++)
+    gfx->drawLine(hx, hy, hx + (int)(ca[i] * hr), hy + (int)(sa[i] * hr), UI_TRACK_TEXT);
+  for (int i = 0; i < 6; i++) {
+    int j = (i + 1) % 6;
+    gfx->drawLine(px[i], py[i], px[j], py[j], acc);
+  }
+  // label over value at each vertex; a perfect IV colours the value
+  for (int i = 0; i < 6; i++) {
+    char num[8];
+    snprintf(num, sizeof(num), "%u", sp[i].val);
+    bool vert = (i == 0 || i == 3);                   // top and bottom sit closer in
+    int cx = hx + (int)(ca[i] * (hr + 38)), cy = hy + (int)(sa[i] * (hr + (vert ? 26 : 18)));
+    uiText(UIF_SMALL, cx, cy - 2, sp[i].label, UI_INK, 1);
+    uiText(UIF_SMALL, cx, cy + 20, num, sp[i].iv >= 31 ? UI_BAR_WARN : UI_TRACK_TEXT, 1);
+  }
 }
 
 // Draws one move as a row: name, its type in the type's own colour, and either
@@ -3267,32 +3526,30 @@ void renderCardStats() {
 // looks the same wherever you meet it.
 // A filled chip in the type's own colour, label in whichever of black/white
 // reads on it. Returns its width so a caller can lay out beside it.
+// Larger chip (19 px high, 16 px label) for the move rows, where there is room.
+int drawTypeChipBig(int x, int y, uint8_t type) {
+  const char *nm = typeName(type);
+  int w = uiTextWidth(UIF_TINY, nm) + 14;
+  gfx->fillRoundRect(x, y, w, 19, 5, typeColor(type));
+  uiText(UIF_TINY, x + 7, y + 15, nm, typeColorIsLight(type) ? UI_INK : UI_WHITE, 0);
+  return w;
+}
+
 int drawTypeChip(int x, int y, uint8_t type) {
   const char *nm = typeName(type);
-  int w = (int)cjkCols(nm) * 6 + 10;
-  gfx->fillRoundRect(x, y, w, 15, 4, typeColor(type));
-  gfx->setTextSize(1);
-  gfx->setTextColor(typeColorIsLight(type) ? UI_INK : UI_WHITE);
-  gfx->setCursor(x + 5, y + 4);
-  gfx->print(nm);
-  return w;
+  // same 19 px chip with a 16 px label as the big one
+  return drawTypeChipBig(x, y, type);
 }
 
 void drawMoveRow(int y, uint8_t mv, bool highlight, int16_t dex) {
   gfx->fillRoundRect(70, y, 326, 50, 12, highlight ? UI_BAR_WARN : UI_BG_DAY);
   gfx->drawRoundRect(70, y, 326, 50, 12, UI_INK);
   if (!mv) {
-    gfx->setTextColor(UI_TRACK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - (int)cjkCols(T(S_MOVE_EMPTY)) * 6, y + 17);
-    gfx->print(T(S_MOVE_EMPTY));
+    uiTextFit(UIF_SMALL, CX, y + 31, T(S_MOVE_EMPTY), UI_TRACK_TEXT, 1, 290);
     return;
   }
   const MoveEntry &m = MOVE_TBL[mv];
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(82, y + 8);
-  gfx->print(m.name);
+  uiTextFit(UIF_SMALL, 82, y + 24, m.name, UI_INK, 0, 300);
   // There is no per-type palette (DexEntry.accent is per species), and inventing
   // one by hand would duplicate what gen_dex.py generates. Colouring same-type
   // moves in the species accent is more useful anyway: STAB is a 1.5x damage
@@ -3301,33 +3558,21 @@ void drawMoveRow(int y, uint8_t mv, bool highlight, int16_t dex) {
   // belongs -- STAB is a damage bonus, so saying it next to the damage reads
   // straight, and it leaves the type free to be its own colour.
   bool stab = hasStab(dex, m.type) && m.cat != MC_STATUS;
-  int cw = drawTypeChip(82, y + 29, m.type);
+  int cw = drawTypeChipBig(82, y + 28, m.type);
   if (stab) {
-    gfx->setTextColor(DEX_TBL[dex].accent);
-    gfx->setTextSize(1);
-    gfx->setCursor(82 + cw + 6, y + 33);
-    gfx->print("STAB");
+    uiText(UIF_TINY, 82 + cw + 8, y + 43, "STAB", DEX_TBL[dex].accent, 0);
   }
   char pw[16];
   if (m.cat == MC_STATUS) snprintf(pw, sizeof(pw), "%s", T(S_MOVE_STATUS));
   else snprintf(pw, sizeof(pw), T(S_MOVE_PWR), m.power);
-  gfx->setTextColor(stab ? DEX_TBL[dex].accent : UI_INK);
-  gfx->setTextSize(1);
-  gfx->setCursor(384 - (int)cjkCols(pw) * 6, y + 33);
-  gfx->print(pw);
+  uiText(UIF_TINY, 384, y + 43, pw, stab ? DEX_TBL[dex].accent : UI_INK, 2);
 }
 
 // card page 4: the four known moves. Tapping a slot opens the picker.
 void renderCardMoves() {
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - cjkCols(T(S_MOVES)) * 9, 44);
-  gfx->print(T(S_MOVES));
+  uiTextFit(UIF_BIG, CX, 66, T(S_MOVES), UI_INK, 1, 220);
   for (int i = 0; i < MOVE_SLOTS; i++) drawMoveRow(MOVE_ROW_Y(i), pet.moves[i], false, pet.speciesId);
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(1);
-  gfx->setCursor(CX - (int)cjkCols(T(S_MOVE_TAP)) * 3, 340);
-  gfx->print(T(S_MOVE_TAP));
+  uiTextFit(UIF_SMALL, CX, 354, T(S_MOVE_TAP), UI_TRACK_TEXT, 1, 340);
 }
 
 // Every move the species can learn by this level, so a slot can be swapped for
@@ -3371,10 +3616,7 @@ int16_t pickTargetDex() {
 void renderMovePick() {
   gfx->fillScreen(RGB565_BLACK);
   gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_MOVE_PICK)) * 6, 40);
-  gfx->print(T(S_MOVE_PICK));
+  uiTextFit(UIF_SMALL, CX, 56, T(S_MOVE_PICK), UI_INK, 1, 230);
 
   uint8_t all[64];
   uint8_t n = learnableList(all, sizeof(all));
@@ -3391,10 +3633,7 @@ void renderMovePick() {
     if (i == movePickPage) gfx->fillCircle(CX - (pages - 1) * 13 + i * 26, 380, 5, UI_INK);
     else gfx->drawCircle(CX - (pages - 1) * 13 + i * 26, 380, 4, UI_INK);
   }
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_BACK)) * 6, 402);
-  gfx->print(T(S_BACK));
+  uiText(UIF_SMALL, CX, 416, T(S_BACK), UI_TRACK_TEXT, 1);
   gfx->flush();
 }
 
@@ -3433,13 +3672,15 @@ static void drawBattleBack() {
 }
 
 // Streams a side's sprite if it is not already the one loaded. Called whenever
-// a creature steps in, never per frame.
+// a creature steps in, never per frame. That is also when it cries, so the cry
+// follows the sprite swap: a switch to the SAME species stays silent.
 static void btlSyncSprite(uint8_t who, const Combatant &c) {
   int16_t key = c.dex * (c.shiny ? -1 : 1);
   if (btlPmdDex[who] == key && btlPmd[who].loaded) return;
   btlPmd[who].unload();
   btlPmdDex[who] = 0;
   if (c.dex < 1 || c.dex > DEX_COUNT) return;
+  audioCry(c.dex);   // a creature just came out: it calls (needs no sprite, so before the load)
   if (btlPmd[who].load(c.dex, c.shiny)) btlPmdDex[who] = key;   // NOT (uint8_t): Hoenn runs past 255
 }
 
@@ -3858,7 +4099,7 @@ static void btlHpBar(int x, int y, int w, const Combatant &c, uint16_t shown) {
   int fw = c.maxHp ? (w - 4) * shown / c.maxHp : 0;
   uint16_t col = (shown * 2 > c.maxHp) ? UI_BAR_OK
                  : (shown * 4 > c.maxHp) ? UI_BAR_WARN : UI_BAR_BAD;
-  gfx->fillRoundRect(x, y, w, 14, 4, UI_TRACK);
+  gfx->fillRoundRect(x, y, w, 14, 4, UI_TRACK_TEXT);
   if (fw > 0) gfx->fillRoundRect(x + 2, y + 2, fw, 10, 3, col);
   gfx->drawRoundRect(x, y, w, 14, 4, UI_INK);
 }
@@ -3866,32 +4107,26 @@ static void btlHpBar(int x, int y, int w, const Combatant &c, uint16_t shown) {
 static void btlSide(int tx, int ty, int sx, int sy, const Combatant &c, uint8_t who) {
   // the scenes are busy, so the name and bar sit on their own plate rather
   // than fighting the artwork for contrast
-  int ph = (who == 0) ? 54 : 40;
-  gfx->fillRoundRect(tx - 8, ty - 8, 158, ph, 8, UI_BG_DAY);
-  gfx->drawRoundRect(tx - 8, ty - 8, 158, ph, 8, UI_INK);
+  // Plate is 190 wide; rows: name+level, HP bar, then numbers/status (your
+  // plate always, the foe's only when it has a status).
+  bool row3 = (who == 0) || (c.ailment != AIL_NONE);
+  int ph = row3 ? 68 : 50;
+  gfx->fillRoundRect(tx - 8, ty - 8, 190, ph, 8, UI_BG_DAY);
+  gfx->drawRoundRect(tx - 8, ty - 8, 190, ph, 8, UI_INK);
   char l[28];
   snprintf(l, sizeof(l), "%s Lv.%u", c.name, c.level);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(1);
-  gfx->setCursor(tx, ty);
-  gfx->print(l);
-  gfx->setTextColor(UI_BAR_WARN);
-  gfx->setCursor(tx, ty + 14);
-  gfx->print("HP");
-  btlHpBar(tx + 18, ty + 12, 122, c, btlHpShown[who]);
+  uiTextFit(UIF_TINY, tx, ty + 12, l, UI_INK, 0, 174);
+  uiText(UIF_TINY, tx, ty + 32, "HP", UI_BAR_WARN, 0);
+  btlHpBar(tx + 26, ty + 20, 148, c, btlHpShown[who]);
   if (who == 0) {                 // your own numbers, as the games do
     char hp[16];
     snprintf(hp, sizeof(hp), "%u/%u", btlHpShown[who], c.maxHp);
-    gfx->setTextColor(UI_INK);
-    gfx->setCursor(tx + 140 - (int)cjkCols(hp) * 6, ty + 28);
-    gfx->print(hp);
+    uiText(UIF_TINY, tx + 174, ty + 52, hp, UI_INK, 2);
   }
   if (c.ailment != AIL_NONE) {   // a status is the thing you most need to see
     static const StrId AIL_STR[] = { S_AIL_PARA, S_AIL_PARA, S_AIL_BURN, S_AIL_POISON,
                                      S_AIL_SLEEP, S_AIL_FREEZE, S_AIL_CONFUSE };
-    gfx->setTextColor(UI_BAR_BAD);
-    gfx->setCursor(tx + 18, ty + 28);
-    gfx->print(T(AIL_STR[c.ailment]));
+    uiText(UIF_TINY, tx, ty + 52, T(AIL_STR[c.ailment]), UI_BAR_BAD, 0);
   }
   // a platform under each creature, so they stand in the scene rather than
   // floating over it
@@ -3961,17 +4196,11 @@ void renderWin() {
   gfx->fillScreen(RGB565_BLACK);
   gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
 
-  gfx->setTextColor(UI_BAR_WARN);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - cjkCols(T(S_BTL_WIN)) * 9, 54);
-  gfx->print(T(S_BTL_WIN));
+  uiTextFit(UIF_BIG, CX, 75, T(S_BTL_WIN), UI_BAR_WARN, 1, 300);
 
   char l[40];
   snprintf(l, sizeof(l), T(S_BTL_BEAT), t.name);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(l) * 6, 96);
-  gfx->print(l);
+  uiTextFit(UIF_SMALL, CX, 110, l, UI_INK, 1, 330);
 
   // the badge, large, with the hard-mode halo if that is how it was won
   if (btlTrainer < TRAINER_GYMS) {
@@ -3997,44 +4226,26 @@ void renderWin() {
       gfx->drawCircle(CX, by, 26, UI_INK);
       char n[4];
       snprintf(n, sizeof(n), "%u", (unsigned)(btlTrainer + 1));
-      gfx->setTextSize(3);
-      gfx->setTextColor(typeColorIsLight(tr.type) ? UI_INK : UI_WHITE);
-      gfx->setCursor(CX - (int)cjkCols(n) * 9, by - 11);
-      gfx->print(n);
+      uiText(UIF_BIG, CX, by + 10, n, typeColorIsLight(tr.type) ? UI_INK : UI_WHITE, 1);
     }
     if (btlNewBadge) {
-      gfx->setTextColor(UI_BAR_OK);
-      gfx->setTextSize(2);
-      gfx->setCursor(CX - cjkCols(T(S_BTL_NEWBADGE)) * 6, 286);
-      gfx->print(T(S_BTL_NEWBADGE));
+      uiTextFit(UIF_SMALL, CX, 300, T(S_BTL_NEWBADGE), UI_BAR_OK, 1, 300);
     }
   }
   snprintf(l, sizeof(l), T(S_BADGES_FMT), pet.badgeCountIn(btlRegion, btlHard));
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(l) * 6, 316);
-  gfx->print(l);
+  uiTextFit(UIF_SMALL, CX, 330, l, UI_INK, 1, 300);
 
   // what the win was worth beyond the badge
   if (btlTrainGain) {
     static const StrId NAMES[3] = { S_TR_ATK, S_TR_DEF, S_TR_SPE };
     snprintf(l, sizeof(l), T(S_WIN_TRAIN_FMT),
              T(NAMES[btlTrainWhich % 3]), btlTrainGain);
-    gfx->setTextColor(UI_BAR_OK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - (int)cjkCols(l) * 6, 344);
-    gfx->print(l);
+    uiTextFit(UIF_SMALL, CX, 358, l, UI_BAR_OK, 1, 280);
   } else if (btlPetIn && btlTrainer >= 0) {
-    gfx->setTextColor(UI_TRACK);
-    gfx->setTextSize(1);
-    gfx->setCursor(CX - (int)cjkCols(T(S_WIN_MAXED)) * 3, 348);
-    gfx->print(T(S_WIN_MAXED));
+    uiTextFit(UIF_TINY, CX, 358, T(S_WIN_MAXED), UI_TRACK_TEXT, 1, 300);
   }
 
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_BACK)) * 6, 380);
-  gfx->print(T(S_BACK));
+  uiText(UIF_SMALL, CX, 394, T(S_BACK), UI_TRACK_TEXT, 1);
   gfx->flush();
 }
 
@@ -4059,25 +4270,16 @@ void renderBattle() {
                  (btlLinkHost ? (btlMyAct && !lan.hasPeerAct())
                               : (lan.state == LINK_WAITING));
   if (lanWait && !btlMsgCount) {
-    gfx->fillRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H * 2 + 8, 12, UI_WHITE);
-    gfx->drawRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H * 2 + 8, 12, UI_INK);
-    gfx->setTextColor(UI_TRACK);
-    gfx->setTextSize(1);
-    const char *w = T(S_LAN_WAITFOE);
-    gfx->setCursor(CX - (int)cjkCols(w) * 3, BTL_GRID_Y + 40);
-    gfx->print(w);
+    gfx->fillRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H * 2 + 14, 12, UI_WHITE);
+    gfx->drawRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H * 2 + 14, 12, UI_INK);
+    uiTextFit(UIF_SMALL, CX, BTL_GRID_Y + 56, T(S_LAN_WAITFOE), UI_TRACK_TEXT, 1, 300);
   } else if (btlMsgCount) {            // narration takes over the menu area
-    gfx->fillRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H * 2 + 8, 12, UI_WHITE);
-    gfx->drawRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H * 2 + 8, 12, UI_INK);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(1);
-    for (uint8_t i = 0; i < btlMsgCount && i < 4; i++) {
-      gfx->setCursor(CX - (int)cjkCols(btlMsg[i]) * 3, BTL_GRID_Y + 14 + i * 18);
-      gfx->print(btlMsg[i]);
-    }
-    gfx->setTextColor(UI_TRACK);
-    gfx->setCursor(CX - 30, BTL_GRID_Y + 84);
-    gfx->print("tap...");
+    // box is 6 px taller than the move grid so four 16 px lines plus "tap..." fit
+    gfx->fillRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H * 2 + 14, 12, UI_WHITE);
+    gfx->drawRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H * 2 + 14, 12, UI_INK);
+    for (uint8_t i = 0; i < btlMsgCount && i < 4; i++)
+      uiTextFit(UIF_TINY, CX, BTL_GRID_Y + 20 + i * 18, btlMsg[i], UI_INK, 1, 310);
+    uiText(UIF_TINY, CX, BTL_GRID_Y + 92, "tap...", UI_TRACK_TEXT, 1);
   } else if (btlMenu == 0) {
     // FIGHT across the top, then POKEMON and RUN side by side. Three full-width
     // rows do not fit: the panel is round, and at that depth the chord is only
@@ -4085,19 +4287,26 @@ void renderBattle() {
     // padded hit areas -- which is what made POKEMON hard to press before.
     gfx->fillRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H, 10, UI_BG_DAY);
     gfx->drawRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H, 10, UI_INK);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - (int)cjkCols(T(S_FIGHT)) * 6, BTL_GRID_Y + 14);
-    gfx->print(T(S_FIGHT));
+    uiText(UIF_SMALL, CX, BTL_GRID_Y + 28, T(S_FIGHT), UI_INK, 1);
     const char *low[2] = { T(S_BTL_SWITCH), T(S_BTL_RUN) };
     for (int i = 0; i < 2; i++) {
       int x = BTL_CELL_X(i + 2), y = BTL_CELL_Y(i + 2);
-      gfx->fillRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, UI_TRACK);
+      gfx->fillRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, UI_TRACK_TEXT);
       gfx->drawRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, UI_INK);
-      gfx->setTextColor(UI_INK);
-      gfx->setTextSize(2);
-      gfx->setCursor(x + (BTL_CELL_W - (int)cjkCols(low[i]) * 12) / 2, y + 14);
-      gfx->print(low[i]);
+      uiTextFit(UIF_SMALL, x + BTL_CELL_W / 2, y + 28, low[i], UI_INK, 1, BTL_CELL_W - 12);
+    }
+  } else if (btlMenu == 3) {
+    gfx->fillRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H, 10, UI_BG_DAY);
+    gfx->drawRoundRect(BTL_GRID_X, BTL_GRID_Y, 328, BTL_CELL_H, 10, UI_INK);
+    char q[24];
+    snprintf(q, sizeof(q), "%s?", T(S_BTL_RUN));
+    uiText(UIF_SMALL, CX, BTL_GRID_Y + 28, q, UI_INK, 1);
+    const char *yn[2] = { T(S_YES), T(S_NO) };
+    for (int i = 0; i < 2; i++) {
+      int x = BTL_CELL_X(i + 2), y = BTL_CELL_Y(i + 2);
+      gfx->fillRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, i ? UI_BAR_OK : UI_BAR_BAD);
+      gfx->drawRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, UI_INK);
+      uiTextFit(UIF_SMALL, x + BTL_CELL_W / 2, y + 28, yn[i], UI_INK, 1, BTL_CELL_W - 12);
     }
   } else if (btlMenu == 2) {
     drawBtlBack();
@@ -4106,38 +4315,28 @@ void renderBattle() {
       int x = BTL_CELL_X(i), y = BTL_CELL_Y(i);
       const Combatant &m = (i == btlSquadAt) ? btlYou : btlSquad[i];
       bool usable = (i != btlSquadAt) && !m.fainted();
-      gfx->fillRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, usable ? UI_BG_DAY : UI_TRACK);
+      gfx->fillRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, usable ? UI_BG_DAY : UI_TRACK_TEXT);
       gfx->drawRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, usable ? UI_INK : 0x8410);
-      gfx->setTextColor(usable ? UI_INK : 0x8410);
-      gfx->setTextSize(1);
-      gfx->setCursor(x + 10, y + 10);
-      gfx->print(m.name);
+      uint16_t tc = usable ? UI_INK : 0x8410;
+      uiTextFit(UIF_SMALL, x + 10, y + 19, m.name, tc, 0, BTL_CELL_W - 20);
       char hp[20];
       snprintf(hp, sizeof(hp), "%u/%u", m.hp, m.maxHp);
-      gfx->setCursor(x + 10, y + 28);
-      gfx->print(hp);
+      uiText(UIF_TINY, x + 10, y + 38, hp, tc, 0);
     }
   } else {
     drawBtlBack();
     for (int i = 0; i < MOVE_SLOTS; i++) {
       int x = BTL_CELL_X(i), y = BTL_CELL_Y(i);
       uint8_t mv = btlYou.moves[i];
-      gfx->fillRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, mv ? UI_BG_DAY : UI_TRACK);
+      gfx->fillRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, mv ? UI_BG_DAY : UI_TRACK_TEXT);
       gfx->drawRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, UI_INK);
       if (!mv) continue;
-      gfx->setTextColor(UI_INK);
-      gfx->setTextSize(1);
-      gfx->setCursor(x + 10, y + 12);
-      gfx->print(MOVE_TBL[mv].name);
-      // Same chip as the move list: in a fight the type IS the decision, and
-      // grey 6px text was the least visible thing on the busiest screen.
-      int cw = drawTypeChip(x + 10, y + 26, MOVE_TBL[mv].type);
+      uiTextFit(UIF_SMALL, x + 10, y + 19, MOVE_TBL[mv].name, UI_INK, 0, BTL_CELL_W - 20);
+      // Same chip as the move list: in a fight the type IS the decision.
+      int cw = drawTypeChip(x + 10, y + 23, MOVE_TBL[mv].type);
       if (hasStab(btlYou.dex, MOVE_TBL[mv].type) &&
           MOVE_TBL[mv].cat != MC_STATUS) {
-        gfx->setTextSize(1);
-        gfx->setTextColor(DEX_TBL[btlYou.dex].accent);
-        gfx->setCursor(x + 10 + cw + 4, y + 30);
-        gfx->print("+");
+        uiText(UIF_TINY, x + 10 + cw + 4, y + 38, "+", DEX_TBL[btlYou.dex].accent, 0);
       }
     }
   }
@@ -4208,12 +4407,9 @@ int btlCellIndexAt(int16_t x, int16_t y) {
 // The way out of the move and switch screens. Without it the only exits were
 // choosing something or leaving the fight entirely.
 static void drawBtlBack() {
-  gfx->fillRoundRect(BTL_BACK_X, BTL_BACK_Y, BTL_BACK_W, BTL_BACK_H, 11, UI_TRACK);
+  gfx->fillRoundRect(BTL_BACK_X, BTL_BACK_Y, BTL_BACK_W, BTL_BACK_H, 11, UI_TRACK_TEXT);
   gfx->drawRoundRect(BTL_BACK_X, BTL_BACK_Y, BTL_BACK_W, BTL_BACK_H, 11, UI_INK);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(T(S_BACK)) * 6, BTL_BACK_Y + 14);
-  gfx->print(T(S_BACK));
+  uiText(UIF_SMALL, CX, BTL_BACK_Y + 28, T(S_BACK), UI_INK, 1);
 }
 
 static bool btlBackTap(int16_t x, int16_t y) {
@@ -4266,7 +4462,16 @@ void battleTap(int16_t x, int16_t y) {
       return;
     }
     if (btlCellHit(2, x, y)) { sfxPlay(SFX_TAP); btlMenu = 2; return; }
-    if (btlCellHit(3, x, y)) { btlRun(); return; }
+    if (btlCellHit(3, x, y)) { sfxPlay(SFX_TAP); btlMenu = 3; return; }
+    return;
+  }
+  if (btlMenu == 3) {
+    // Run confirmation. YES sits where POKEMON is and NO where RUN was, so a
+    // second tap on the same spot cancels rather than confirms; anywhere else
+    // backs out too. Only an explicit YES leaves the fight.
+    if (btlCellHit(2, x, y)) { btlRun(); return; }
+    sfxPlay(SFX_TAP);
+    btlMenu = 0;
     return;
   }
   if (btlMenu == 2) {
@@ -4331,19 +4536,13 @@ static void renderPlayerBadges() {
   // the player's name if they have set one, the generic title if not; either
   // way tapping it opens the keyboard
   const char *tn = pet.trainerName[0] ? pet.trainerName : T(S_TRAINER);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - (int)cjkCols(tn) * 9, 40);
-  gfx->print(tn);
+  uiTextFit(UIF_BIG, CX, 61, tn, UI_INK, 1, 260);
 
   // Pages 1 and 2 are the other regions' ladders: name them, and drop the
   // avatar so the badges have the room. Only page 0 is "you".
   if (playerBadgeRegion != 0) {
     const char *rn = TRAINER_SETS[playerBadgeRegion].region;
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - (int)cjkCols(rn) * 6, 120);
-    gfx->print(rn);
+    uiText(UIF_SMALL, CX, 134, rn, UI_INK, 1);
   } else if (gShowAllAvatars) {          // emulator only: every avatar at once
     for (uint8_t i = 0; i < AVATAR_COUNT; i++)
       drawAvatar(i, 60 + (i % 4) * 88, 60 + (i / 4) * 60, 3);
@@ -4351,19 +4550,14 @@ static void renderPlayerBadges() {
     drawAvatar(pet.avatar, CX - AVATAR_PX * 2, 72, 4);
     // the sprite alone is not always obvious at 16x16, so it is named
     const char *an = AVATARS[pet.avatar % AVATAR_COUNT].name;
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(1);
-    gfx->setCursor(CX - (int)cjkCols(an) * 3, 143);
-    gfx->print(an);
-    gfx->setTextColor(UI_TRACK);
-    gfx->setCursor(CX - (int)cjkCols(T(S_AVATAR_HINT)) * 3, 154);
-    gfx->print(T(S_AVATAR_HINT));
+    uiTextFit(UIF_TINY, CX, 148, an, UI_INK, 1, 200);
+    uiTextFit(UIF_TINY, CX, 166, T(S_AVATAR_HINT), UI_TRACK_TEXT, 1, 260);
   }
 
   // The real badges, 2x4. Unearned ones draw as a faint outline so the shape
   // of what is missing is still visible.
   for (int i = 0; i < TRAINER_GYMS; i++) {
-    int bx = 140 + (i % 4) * 62, by = 188 + (i / 4) * 62;
+    int bx = 140 + (i % 4) * 62, by = 202 + (i / 4) * 60;
     bool got = pet.hasBadge(playerBadgeRegion, i, false);
     bool hard = pet.hasBadge(playerBadgeRegion, i, true);
     if (hard) {
@@ -4376,7 +4570,7 @@ static void renderPlayerBadges() {
       gfx->drawCircle(bx, by, 21, 0xFDE0);
     }
     if (!got) {
-      gfx->drawCircle(bx, by, 20, UI_TRACK);
+      gfx->drawCircle(bx, by, 20, UI_TRACK_TEXT);
       continue;
     }
     const BadgeArt *a = badgeArtFor(playerBadgeRegion, i);
@@ -4393,17 +4587,12 @@ static void renderPlayerBadges() {
       }
   }
   char l[32];
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
   snprintf(l, sizeof(l), T(S_STREAK_FMT), pet.streak, pet.bestStreak);
-  gfx->setCursor(CX - (int)cjkCols(l) * 6, 286);
-  gfx->print(l);
+  uiText(UIF_SMALL, CX, 312, l, UI_INK, 1);
   snprintf(l, sizeof(l), T(S_POKEDEX_FMT), pet.registeredCount(), DEX_COUNT);
-  gfx->setCursor(CX - (int)cjkCols(l) * 6, 312);
-  gfx->print(l);
+  uiText(UIF_SMALL, CX, 336, l, UI_INK, 1);
   snprintf(l, sizeof(l), T(S_PARTY_FMT), party.count());
-  gfx->setCursor(CX - (int)cjkCols(l) * 6, 338);
-  gfx->print(l);
+  uiText(UIF_SMALL, CX, 360, l, UI_INK, 1);
 }
 
 // Page 2: the medals. They used to sit on the creature's card; they belong with
@@ -4414,30 +4603,19 @@ static void renderPlayerMedals() {
     if (pet.hasMedal(1 << i)) got++;
   char head[24];
   snprintf(head, sizeof(head), T(S_MEDALS_FMT), got, MED_COUNT);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - cjkCols(head) * 9, 44);
-  gfx->print(head);
+  uiTextFit(UIF_BIG, CX, 65, head, UI_INK, 1, 300);
 
   for (int i = 0; i < MED_COUNT; i++) {
     int x = 46 + (i % 2) * 190, y = 96 + (i / 2) * 58;
     bool g = pet.hasMedal(1 << i);
-    gfx->fillRoundRect(x, y, 180, 48, 10, g ? UI_BAR_OK : UI_TRACK);
+    gfx->fillRoundRect(x, y, 180, 48, 10, g ? UI_BAR_OK : UI_TRACK_TEXT);
     gfx->drawRoundRect(x, y, 180, 48, 10, UI_INK);
-    gfx->setTextColor(g ? UI_BG_DAY : UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(x + (180 - (int)cjkCols(medalLabel(i)) * 12) / 2, y + 6);
-    gfx->print(medalLabel(i));
-    gfx->setTextSize(1);
-    gfx->setCursor(x + (180 - (int)cjkCols(medalDesc(i)) * 6) / 2, y + 30);
-    gfx->print(medalDesc(i));
+    uiTextFit(UIF_SMALL, x + 90, y + 20, medalLabel(i), g ? UI_BG_DAY : UI_INK, 1, 170);
+    uiTextFit(UIF_TINY, x + 90, y + 40, medalDesc(i), g ? UI_BG_DAY : UI_INK, 1, 172);
   }
   char tot[28];
   snprintf(tot, sizeof(tot), T(S_MEDALS_TOTAL_FMT), pet.totalMedals);
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(1);
-  gfx->setCursor(CX - (int)cjkCols(tot) * 3, 344);
-  gfx->print(tot);
+  uiTextFit(UIF_SMALL, CX, 350, tot, UI_TRACK_TEXT, 1, 300);
 }
 
 void renderPlayer() {
@@ -4448,13 +4626,10 @@ void renderPlayer() {
 
   for (uint8_t i = 0; i < PLAYER_PAGES; i++) {
     int dx = CX - (PLAYER_PAGES - 1) * 13 + i * 26;
-    if (i == playerPage) gfx->fillCircle(dx, 366, 5, UI_INK);
-    else gfx->drawCircle(dx, 366, 4, UI_INK);
+    if (i == playerPage) gfx->fillCircle(dx, 394, 5, UI_INK);
+    else gfx->drawCircle(dx, 394, 4, UI_INK);
   }
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_BACK)) * 6, 392);
-  gfx->print(T(S_BACK));
+  uiText(UIF_SMALL, CX, 430, T(S_BACK), UI_TRACK_TEXT, 1);
   gfx->flush();
 }
 
@@ -4516,27 +4691,16 @@ void renderSpeed() {
     if (now > spdOverUntil) { spdOpen = false; return; }
     char b[24];
     snprintf(b, sizeof(b), T(S_SCORE_FMT), spdHits);
-    gfx->setTextColor(ink);
-    gfx->setTextSize(4);
-    gfx->setCursor(CX - cjkCols(b) * 12, 150);
-    gfx->print(b);
+    uiTextFit(UIF_BIG, CX, 178, b, ink, 1, 340);
     char g[20];
     snprintf(g, sizeof(g), T(S_SPD_GAIN_FMT), spdGain);
-    gfx->setTextColor(UI_BAR_WARN);
-    gfx->setTextSize(3);
-    gfx->setCursor(CX - cjkCols(g) * 9, 210);
-    gfx->print(g);
-    gfx->setTextSize(2);
+    uiTextFit(UIF_BIG, CX, 231, g, UI_BAR_WARN, 1, 340);
     if (spdNewHi && spdHits > 0) {
-      gfx->setTextColor(UI_BAR_WARN);
-      gfx->setCursor(CX - cjkCols(T(S_NEW_RECORD)) * 6, 256);
-      gfx->print(T(S_NEW_RECORD));
+      uiText(UIF_SMALL, CX, 270, T(S_NEW_RECORD), UI_BAR_WARN, 1);
     } else {
       char r[20];
       snprintf(r, sizeof(r), T(S_RECORD_FMT), pet.spdHi);
-      gfx->setTextColor(ink);
-      gfx->setCursor(CX - cjkCols(r) * 6, 256);
-      gfx->print(r);
+      uiText(UIF_SMALL, CX, 270, r, ink, 1);
     }
     gfx->flush();
     return;
@@ -4568,16 +4732,11 @@ void renderSpeed() {
 
   char b[12];
   snprintf(b, sizeof(b), "%u", spdHits);
-  gfx->setTextColor(ink);
-  gfx->setTextSize(4);
-  gfx->setCursor(CX - cjkCols(b) * 12, 30);
-  gfx->print(b);
+  uiText(UIF_BIG, CX, 58, b, ink, 1);
   // seconds left
   uint32_t left = (spdUntil > now) ? (spdUntil - now + 999) / 1000 : 0;
   snprintf(b, sizeof(b), "%us", (unsigned)left);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(b) * 6, 76);
-  gfx->print(b);
+  uiText(UIF_SMALL, CX, 90, b, ink, 1);
   gfx->flush();
 }
 
@@ -4626,32 +4785,28 @@ static void drawPickCell(uint8_t n, int x, int y, uint8_t capLvl) {
     nm = m.nick[0] ? m.nick : DEX_TBL[dex].name;
   }
   if (capLvl && lvl > capLvl) lvl = capLvl;   // show the level it will FIGHT at
-  gfx->fillRoundRect(x, y, PICK_CELL_W, PICK_CELL_H, 10, on ? UI_BG_DAY : UI_TRACK);
+  gfx->fillRoundRect(x, y, PICK_CELL_W, PICK_CELL_H, 10, on ? UI_BG_DAY : UI_TRACK_TEXT);
   gfx->drawRoundRect(x, y, PICK_CELL_W, PICK_CELL_H, 10, on ? UI_INK : 0x8410);
   const uint8_t *th = thumbs.get(dex);
   if (th) drawThumb(th, x - 12, y - 6, 2, !on);
-  gfx->setTextColor(on ? UI_INK : 0x8410);
-  gfx->setTextSize(1);
-  gfx->setCursor(x + 54, y + 14);
-  gfx->print(nm);
+  uint16_t tc = on ? UI_INK : 0x8410;
+  uiTextFit(UIF_TINY, x + 54, y + 18, nm, tc, 0, PICK_CELL_W - 54 - 6);
   char l[16];
   snprintf(l, sizeof(l), "Lv.%u%s", (unsigned)lvl, shiny ? " *" : "");
-  gfx->setCursor(x + 54, y + 30);
-  gfx->print(l);
+  uiText(UIF_TINY, x + 54, y + 35, l, tc, 0);
   // its typing is the whole reason you are on this screen
   const DexEntry &d = DEX_TBL[dex];
-  gfx->setTextColor(on ? d.accent : 0x8410);
-  gfx->setCursor(x + 54, y + 48);
-  gfx->print(typeName(d.type1));
-  if (d.type2 != T_NONE) {
-    gfx->setCursor(x + 54, y + 60);
-    gfx->print(typeName(d.type2));
-  }
-  if (on) {
-    gfx->fillCircle(x + PICK_CELL_W - 16, y + 16, 9, UI_BAR_OK);
-    gfx->setTextColor(UI_BG_DAY);
-    gfx->setCursor(x + PICK_CELL_W - 19, y + 13);
-    gfx->print("*");
+  uint16_t ac = on ? d.accent : 0x8410;
+  uiText(UIF_TINY, x + 54, y + 52, typeName(d.type1), ac, 0);
+  if (d.type2 != T_NONE)
+    uiText(UIF_TINY, x + 54, y + 69, typeName(d.type2), ac, 0);
+  if (on) {                       // a tick in a green disc
+    int cx = x + PICK_CELL_W - 18, cy = y + 30;     // beside the level line, clear of the name
+    gfx->fillCircle(cx, cy, 10, UI_BAR_OK);
+    gfx->drawLine(cx - 5, cy, cx - 2, cy + 4, UI_BG_DAY);
+    gfx->drawLine(cx - 5, cy + 1, cx - 2, cy + 5, UI_BG_DAY);
+    gfx->drawLine(cx - 2, cy + 4, cx + 5, cy - 4, UI_BG_DAY);
+    gfx->drawLine(cx - 2, cy + 5, cx + 5, cy - 3, UI_BG_DAY);
   }
 }
 
@@ -4670,16 +4825,10 @@ void renderPick() {
       if (t.team[k].level > top) top = t.team[k].level;
     snprintf(head, sizeof(head), "%s  Lv.%u x%u", t.name, top, t.count);
   }
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(head) * 6, 44);
-  gfx->print(head);
+  uiTextFit(UIF_SMALL, CX, 54, head, UI_INK, 1, 260);
   char sub[28];
   snprintf(sub, sizeof(sub), T(S_PICK_FMT), pickChosen(), cap);
-  gfx->setTextSize(1);
-  gfx->setTextColor(pickChosen() > cap ? UI_BAR_BAD : UI_TRACK);
-  gfx->setCursor(CX - (int)cjkCols(sub) * 3, 68);
-  gfx->print(sub);
+  uiTextFit(UIF_TINY, CX, 78, sub, pickChosen() > cap ? UI_BAR_BAD : UI_TRACK_TEXT, 1, 280);
 
   uint8_t seen = 0, drawn = 0;
   for (uint8_t n = 0; n <= PARTY_SLOTS; n++) {
@@ -4698,21 +4847,15 @@ void renderPick() {
   }
 
   bool ok = pickChosen() > 0 && pickChosen() <= cap;
-  gfx->fillRoundRect(PICK_BACK_X, PICK_GO_Y, PICK_BTN_W, PICK_BTN_H, 12, UI_TRACK);
+  gfx->fillRoundRect(PICK_BACK_X, PICK_GO_Y, PICK_BTN_W, PICK_BTN_H, 12, UI_TRACK_TEXT);
   gfx->drawRoundRect(PICK_BACK_X, PICK_GO_Y, PICK_BTN_W, PICK_BTN_H, 12, UI_INK);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(PICK_BACK_X + (PICK_BTN_W - (int)cjkCols(T(S_BACK)) * 12) / 2,
-                 PICK_GO_Y + 14);
-  gfx->print(T(S_BACK));
+  uiTextFit(UIF_SMALL, PICK_BACK_X + PICK_BTN_W / 2, PICK_GO_Y + 28, T(S_BACK), UI_INK, 1,
+            PICK_BTN_W - 12);
   gfx->fillRoundRect(PICK_GO_X, PICK_GO_Y, PICK_BTN_W, PICK_BTN_H, 12,
-                     ok ? UI_BAR_OK : UI_TRACK);
+                     ok ? UI_BAR_OK : UI_TRACK_TEXT);
   gfx->drawRoundRect(PICK_GO_X, PICK_GO_Y, PICK_BTN_W, PICK_BTN_H, 12, UI_INK);
-  gfx->setTextColor(ok ? UI_BG_DAY : 0x8410);
-  gfx->setTextSize(2);
-  gfx->setCursor(PICK_GO_X + (PICK_BTN_W - (int)cjkCols(T(S_FIGHT)) * 12) / 2,
-                 PICK_GO_Y + 14);
-  gfx->print(T(S_FIGHT));
+  uiTextFit(UIF_SMALL, PICK_GO_X + PICK_BTN_W / 2, PICK_GO_Y + 28, T(S_FIGHT),
+            ok ? UI_BG_DAY : 0x8410, 1, PICK_BTN_W - 12);
   gfx->flush();
 }
 
@@ -4764,10 +4907,7 @@ void pickTap(int16_t x, int16_t y) {
 void renderLan() {
   gfx->fillScreen(RGB565_BLACK);
   gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_LAN)) * 6, 44);
-  gfx->print(T(S_LAN));
+  uiText(UIF_SMALL, CX, 58, T(S_LAN), UI_INK, 1);
 
   const char *msg = T(S_LAN_PICK);
   switch (lan.state) {
@@ -4780,11 +4920,9 @@ void renderLan() {
     case LINK_DONE:      msg = lan.youWon ? T(S_BTL_WIN) : T(S_BTL_LOSE); break;
     default: break;
   }
-  gfx->setTextColor((lan.state == LINK_REFUSED || lan.state == LINK_LOST)
-                      ? UI_BAR_BAD : UI_TRACK);
-  gfx->setTextSize(1);
-  gfx->setCursor(CX - (int)cjkCols(msg) * 3, 76);
-  gfx->print(msg);
+  uiTextFit(UIF_TINY, CX, 86, msg,
+            (lan.state == LINK_REFUSED || lan.state == LINK_LOST) ? UI_BAR_BAD : UI_TRACK_TEXT,
+            1, 300);
 
   if (lan.state == LINK_OFF || lan.state == LINK_REFUSED ||
       lan.state == LINK_LOST) {
@@ -4793,49 +4931,29 @@ void renderLan() {
       int y = 120 + i * 70;
       gfx->fillRoundRect(90, y, 286, 56, 12, UI_BG_DAY);
       gfx->drawRoundRect(90, y, 286, 56, 12, UI_INK);
-      gfx->setTextColor(UI_INK);
-      gfx->setTextSize(2);
-      gfx->setCursor(CX - (int)cjkCols(lab[i]) * 6, y + 20);
-      gfx->print(lab[i]);
+      uiTextFit(UIF_SMALL, CX, y + 35, lab[i], UI_INK, 1, 260);
     }
   } else if (lan.state == LINK_READY) {
     char l[40];
     if (lan.peerName[0]) {
-      gfx->setTextColor(UI_INK);
-      gfx->setTextSize(2);
-      gfx->setCursor(CX - (int)cjkCols(lan.peerName) * 6, 130);
-      gfx->print(lan.peerName);
+      uiTextFit(UIF_SMALL, CX, 144, lan.peerName, UI_INK, 1, 300);
     }
     snprintf(l, sizeof(l), T(S_LAN_VS), lan.theirsN);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - (int)cjkCols(l) * 6, 150);
-    gfx->print(l);
+    uiTextFit(UIF_SMALL, CX, 174, l, UI_INK, 1, 300);
     gfx->fillRoundRect(120, 220, 226, 56, 12, UI_BAR_OK);
     gfx->drawRoundRect(120, 220, 226, 56, 12, UI_INK);
-    gfx->setTextColor(UI_BG_DAY);
-    gfx->setCursor(CX - cjkCols(T(S_FIGHT)) * 6, 240);
-    gfx->print(T(S_FIGHT));
+    uiTextFit(UIF_SMALL, CX, 255, T(S_FIGHT), UI_BG_DAY, 1, 206);
   } else if (lan.state == LINK_DONE) {
     // Both squads are still in hand on both devices, so going again costs one
     // packet -- there is nothing to re-exchange.
     if (lan.peerName[0]) {
-      gfx->setTextColor(UI_INK);
-      gfx->setTextSize(2);
-      gfx->setCursor(CX - (int)cjkCols(lan.peerName) * 6, 140);
-      gfx->print(lan.peerName);
+      uiTextFit(UIF_SMALL, CX, 154, lan.peerName, UI_INK, 1, 300);
     }
     gfx->fillRoundRect(120, 220, 226, 56, 12, UI_BG_DAY);
     gfx->drawRoundRect(120, 220, 226, 56, 12, UI_INK);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - cjkCols(T(S_LAN_REMATCH)) * 6, 240);
-    gfx->print(T(S_LAN_REMATCH));
+    uiTextFit(UIF_SMALL, CX, 255, T(S_LAN_REMATCH), UI_INK, 1, 206);
   }
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_BACK)) * 6, 392);
-  gfx->print(T(S_BACK));
+  uiText(UIF_SMALL, CX, 406, T(S_BACK), UI_TRACK_TEXT, 1);
   gfx->flush();
 }
 
@@ -4914,24 +5032,18 @@ void renderGyms() {
   char title[28];
   snprintf(title, sizeof(title), "%s %s", TRAINER_SETS[gymRegion % GYM_REGIONS].region,
            T(S_GYMS));
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(title) * 6, 42);
-  gfx->print(title);
+  uiTextFit(UIF_MID, CX, 54, title, UI_INK, 1, 280);
   // The badge count used to sit here, directly behind the difficulty pill. The
   // region chooser already shows it per region, which is where you are choosing
   // from, so it was both redundant and in the way.
   // difficulty pill: hard caps YOUR team to the leader's size and level, so it
   // is a different ladder with its own badges rather than a damage multiplier
   const char *dif = T(gymHard ? S_HARD : S_EASY);
-  int dw = (int)cjkCols(dif) * 12 + 48;      // wider as well as taller
+  int dw = uiTextWidth(UIF_SMALL, dif) + 48;      // wider as well as taller
   if (dw < 120) dw = 120;
   gfx->fillRoundRect(CX - dw / 2, GYMDIF_Y, dw, GYMDIF_H, 12,
-                     gymHard ? UI_BAR_BAD : UI_TRACK);
-  gfx->setTextColor(gymHard ? UI_BG_DAY : UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(dif) * 6, GYMDIF_Y + 14);
-  gfx->print(dif);
+                     gymHard ? UI_BAR_BAD : UI_TRACK_TEXT);
+  uiText(UIF_SMALL, CX, GYMDIF_Y + 28, dif, gymHard ? UI_BG_DAY : UI_INK, 1);
 
   for (int i = 0; i < GYM_ROWS; i++) {
     uint8_t idx = gymPage * GYM_ROWS + i;
@@ -4940,44 +5052,27 @@ void renderGyms() {
     int y = GYM_ROW_Y(i);
     bool done = pet.hasBadge(gymRegion, idx, gymHard);
     bool open_ = gymUnlocked(idx, gymHard);
-    gfx->fillRoundRect(70, y, 326, 44, 10, done ? UI_TRACK : UI_BG_DAY);
-    gfx->drawRoundRect(70, y, 326, 44, 10, open_ ? UI_INK : UI_TRACK);
-    gfx->setTextColor(open_ ? UI_INK : UI_TRACK);
-    gfx->setTextSize(2);
-    gfx->setCursor(84, y + 8);
-    gfx->print(t.name);
-    gfx->setTextSize(1);
-    gfx->setTextColor(UI_TRACK);
-    gfx->setCursor(84, y + 28);
-    gfx->print(open_ ? t.place : T(S_LOCKED));
+    gfx->fillRoundRect(70, y, 326, 44, 10, done ? UI_TRACK_TEXT : UI_BG_DAY);
+    gfx->drawRoundRect(70, y, 326, 44, 10, open_ ? UI_INK : UI_TRACK_TEXT);
+    uiTextFit(UIF_TINY, 84, y + 19, t.name, open_ ? UI_INK : UI_TRACK_TEXT, 0, 270);
+    uiTextFit(UIF_TINY, 84, y + 38, open_ ? t.place : T(S_LOCKED), UI_TRACK_TEXT, 0, 180);
     // the level of the strongest creature: the honest measure of the wall
     uint8_t top = 0;
     for (int k = 0; k < t.count; k++)
       if (t.team[k].level > top) top = t.team[k].level;
     char lv[16];
     snprintf(lv, sizeof(lv), "Lv.%u x%u", top, t.count);
-    gfx->setTextColor(done ? UI_BAR_OK : (open_ ? UI_INK : UI_TRACK));
-    gfx->setCursor(384 - (int)cjkCols(lv) * 6, y + 28);
-    gfx->print(lv);
-    if (done) {
-      gfx->setTextColor(UI_BAR_OK);
-      gfx->setCursor(370, y + 8);
-      gfx->print("*");
-    }
+    uiText(UIF_TINY, 384, y + 38, lv, done ? UI_BAR_OK : (open_ ? UI_INK : UI_TRACK_TEXT), 2);
+    if (done) uiText(UIF_TINY, 384, y + 19, "*", UI_BAR_OK, 2);
   }
   uint8_t pages = (TRAINER_COUNT + GYM_ROWS - 1) / GYM_ROWS;
   for (uint8_t i = 0; i < pages; i++) {
     int dx = CX - (pages - 1) * 13 + i * 26;
-    if (i == gymPage) gfx->fillCircle(dx, 366, 5, UI_INK);
-    else gfx->drawCircle(dx, 366, 4, UI_INK);
+    if (i == gymPage) gfx->fillCircle(dx, 394, 5, UI_INK);
+    else gfx->drawCircle(dx, 394, 4, UI_INK);
   }
-  // the other kind of battle lives here too
-  gfx->fillRoundRect(148, 380, 170, 32, 9, UI_BG_DAY);
-  gfx->drawRoundRect(148, 380, 170, 32, 9, UI_INK);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_LAN)) * 6, 388);
-  gfx->print(T(S_LAN));
+  // LAN battle is reached from the region chooser, not from a ladder
+  uiText(UIF_SMALL, CX, 430, T(S_BACK), UI_TRACK_TEXT, 1);   // a tap off the rows goes back
   gfx->flush();
 }
 
@@ -5005,14 +5100,8 @@ static void drawEggRegion() {
   snprintf(l, sizeof(l), "%s >", pet.regionName());
   gfx->fillRoundRect(EGGREG_X, EGGREG_Y, EGGREG_W, EGGREG_H, 10, UI_WHITE);
   gfx->drawRoundRect(EGGREG_X, EGGREG_Y, EGGREG_W, EGGREG_H, 10, UI_INK);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(EGGREG_X + (EGGREG_W - (int)cjkCols(l) * 12) / 2, EGGREG_Y + 9);
-  gfx->print(l);
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(1);
-  gfx->setCursor(CX - (int)cjkCols(T(S_EGG_REGION)) * 3, EGGREG_Y + EGGREG_H + 6);
-  gfx->print(T(S_EGG_REGION));
+  uiTextFit(UIF_SMALL, EGGREG_X + EGGREG_W / 2, EGGREG_Y + 9 + 14, l, UI_INK, 1, EGGREG_W - 16);
+  uiTextFit(UIF_TINY, CX, EGGREG_Y + EGGREG_H + 20, T(S_EGG_REGION), UI_TRACK_TEXT, 1, 230);
 }
 
 // True if the tap was on the region pill, so the egg does not also get cracked.
@@ -5125,10 +5214,7 @@ static void renderRegionPick(uint8_t mode) {
   if (mode == RPICK_FOR_START) snprintf(ttl, sizeof(ttl), "%s", T(S_CHOOSE_REGION));
   else if (forGyms) snprintf(ttl, sizeof(ttl), "%s", T(S_GYMS));
   else snprintf(ttl, sizeof(ttl), T(S_POKEDEX_FMT), pet.registeredCount(), DEX_COUNT);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(ttl) * 6, 48);
-  gfx->print(ttl);
+  uiTextFit(UIF_MID, CX, 70, ttl, UI_INK, 1, 280);
 
   for (uint8_t row = 0; row < RPICK_PER_PAGE; row++) {
     uint8_t i = (uint8_t)(first + row);
@@ -5139,12 +5225,8 @@ static void renderRegionPick(uint8_t mode) {
     // region does not exist" when what we mean is "download its pack".
     bool open = forGyms || regionAvailable(i);
     gfx->fillRoundRect(RPICK_X, y, RPICK_W, RPICK_H, 12, open ? UI_WHITE : UI_BG_DAY);
-    gfx->drawRoundRect(RPICK_X, y, RPICK_W, RPICK_H, 12, open ? UI_INK : UI_TRACK);
+    gfx->drawRoundRect(RPICK_X, y, RPICK_W, RPICK_H, 12, open ? UI_INK : UI_TRACK_TEXT);
     const char *nm = forGyms ? TRAINER_SETS[i].region : REGIONS[i].name;
-    gfx->setTextColor(open ? UI_INK : UI_TRACK);
-    gfx->setTextSize(3);
-    gfx->setCursor(RPICK_X + 18, y + 12);
-    gfx->print(nm);
     // At first boot there is no subtitle: naming the starter here would give
     // away the next screen, and the counts the other two modes show would all
     // read zero on a new save anyway.
@@ -5158,35 +5240,32 @@ static void renderRegionPick(uint8_t mode) {
       snprintf(sub, sizeof(sub), "%u/%u",
                pet.registeredCountIn(REGIONS[i].lo, REGIONS[i].hi),
                (unsigned)(REGIONS[i].hi - REGIONS[i].lo + 1));
+    int subW = 0;
     if (sub[0]) {
-      gfx->setTextColor(UI_TRACK);
-      gfx->setTextSize(2);
-      gfx->setCursor(RPICK_X + RPICK_W - 18 - (int)cjkCols(sub) * 12, y + 22);
-      gfx->print(sub);
+      subW = uiTextWidth(UIF_SMALL, sub);
+      uiText(UIF_SMALL, RPICK_X + RPICK_W - 18, uiMidY(UIF_SMALL, y, RPICK_H), sub, UI_TRACK_TEXT, 2);
     }
+    // the name takes whatever the subtitle leaves
+    uiTextFit(UIF_MID, RPICK_X + 18, uiMidY(UIF_MID, y, RPICK_H), nm, open ? UI_INK : UI_TRACK_TEXT, 0,
+              RPICK_W - 36 - subW - (subW ? 8 : 0));
   }
   if (forGyms) {
     gfx->fillRoundRect(LANBTN_X, LANBTN_Y, LANBTN_W, LANBTN_H, 11, UI_BG_DAY);
     gfx->drawRoundRect(LANBTN_X, LANBTN_Y, LANBTN_W, LANBTN_H, 11, UI_INK);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - cjkCols(T(S_LAN)) * 6, LANBTN_Y + 14);
-    gfx->print(T(S_LAN));
+    uiTextFit(UIF_SMALL, CX, LANBTN_Y + 28, T(S_LAN), UI_INK, 1, LANBTN_W - 12);
   }
   if (pages > 1) {                        // dots: which page of regions this is
+    // on the gym chooser the dots sit BELOW the LAN BATTLE button
+    const int dotsY = forGyms ? LANBTN_Y + LANBTN_H + 20 : RPICK_DOTS_Y;
     int total = pages * 16 - 8;
     for (uint8_t d = 0; d < pages; d++) {
       int cx = CX - total / 2 + d * 16;
-      if (d == rpickPage) gfx->fillCircle(cx, RPICK_DOTS_Y, RPICK_DOT_R, UI_INK);
-      else gfx->drawCircle(cx, RPICK_DOTS_Y, RPICK_DOT_R, UI_TRACK);
+      if (d == rpickPage) gfx->fillCircle(cx, dotsY, RPICK_DOT_R, UI_INK);
+      else gfx->drawCircle(cx, dotsY, RPICK_DOT_R, UI_TRACK_TEXT);
     }
   }
-  if (mode != RPICK_FOR_START) {          // first boot has nowhere to go back to
-    gfx->setTextColor(UI_TRACK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - cjkCols(T(S_BACK)) * 6, 392);
-    gfx->print(T(S_BACK));
-  }
+  if (mode != RPICK_FOR_START)            // first boot has nowhere to go back to
+    uiText(UIF_SMALL, CX, forGyms ? 436 : 406, T(S_BACK), UI_TRACK_TEXT, 1);
   gfx->flush();
 }
 
@@ -5219,23 +5298,14 @@ void renderLearn() {
   char head[40];
   const char *nm = pet.nick[0] ? pet.nick : DEX_TBL[pet.speciesId].name;
   snprintf(head, sizeof(head), T(S_LEARN_Q), nm);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(1);
-  gfx->setCursor(CX - (int)cjkCols(head) * 3, 48);
-  gfx->print(head);
-  gfx->setTextColor(DEX_TBL[pet.speciesId].accent);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - (int)cjkCols(MOVE_TBL[mv].name) * 9, 66);
-  gfx->print(MOVE_TBL[mv].name);
+  uiTextFit(UIF_SMALL, CX, 56, head, UI_INK, 1, 250);
+  uiTextFit(UIF_BIG, CX, 90, MOVE_TBL[mv].name, DEX_TBL[pet.speciesId].accent, 1, 250);
 
   for (int i = 0; i < MOVE_SLOTS; i++) drawMoveRow(LEARN_ROW_Y(i), pet.moves[i], false, pet.speciesId);
 
-  gfx->fillRoundRect(70, LEARN_SKIP_Y, 326, 44, 12, UI_TRACK);
+  gfx->fillRoundRect(70, LEARN_SKIP_Y, 326, 44, 12, UI_TRACK_TEXT);
   gfx->drawRoundRect(70, LEARN_SKIP_Y, 326, 44, 12, UI_INK);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_LEARN_SKIP)) * 6, LEARN_SKIP_Y + 14);
-  gfx->print(T(S_LEARN_SKIP));
+  uiTextFit(UIF_SMALL, CX, LEARN_SKIP_Y + 29, T(S_LEARN_SKIP), UI_INK, 1, 300);
   gfx->flush();
 }
 
@@ -5246,26 +5316,17 @@ void renderCardMedals() {
     if (pet.hasMedal(1 << i)) got++;
   char head[20];
   snprintf(head, sizeof(head), T(S_MEDALS_FMT), got, MED_COUNT);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - cjkCols(head) * 9, 48);
-  gfx->print(head);
+  uiTextFit(UIF_BIG, CX, 70, head, UI_INK, 1, 220);
 
   for (int i = 0; i < MED_COUNT; i++) {
     int x = 28 + (i % 2) * 206, y = 104 + (i / 2) * 54;
     bool g = pet.hasMedal(1 << i);
-    gfx->fillRoundRect(x, y, 196, 44, 10, g ? UI_BAR_OK : UI_TRACK);
+    gfx->fillRoundRect(x, y, 196, 44, 10, g ? UI_BAR_OK : UI_TRACK_TEXT);
     if (g) {  // earned marker
       gfx->fillCircle(x + 22, y + 22, 11, UI_BG_DAY);
-      gfx->setTextColor(UI_BAR_OK);
-      gfx->setTextSize(2);
-      gfx->setCursor(x + 16, y + 13);
-      gfx->print("v");
+      uiText(UIF_SMALL, x + 22, y + 29, "v", UI_BAR_OK, 1);
     }
-    gfx->setTextColor(g ? UI_BG_DAY : 0x8410);
-    gfx->setTextSize(2);
-    gfx->setCursor(x + 44, y + 14);
-    gfx->print(medalDesc(i));
+    uiTextFit(UIF_SMALL, x + 44, y + 29, medalDesc(i), g ? UI_BG_DAY : 0x8410, 0, 148);
   }
 }
 
@@ -5273,35 +5334,25 @@ void renderCardMedals() {
 // that used to be invisible (how long until levelling up/evolving and why)
 void renderCardProgress() {
   const DexEntry &d = DEX_TBL[pet.speciesId];
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - cjkCols(T(S_PROGRESS)) * 9, 44);
-  gfx->print(T(S_PROGRESS));
+  uiTextFit(UIF_BIG, CX, 66, T(S_PROGRESS), UI_INK, 1, 220);
 
   // big level
   char lv[10];
   snprintf(lv, sizeof(lv), T(S_LVL_FMT), pet.level());
-  gfx->setTextSize(5);
-  gfx->setCursor(CX - cjkCols(lv) * 15, 86);
-  gfx->print(lv);
+  uiText(UIF_HUGE, CX, 140, lv, UI_INK, 1);
 
   // progress bar to the next level (1 level = 60 min of play)
   uint8_t into = pet.ageMinutes % MINUTES_PER_LEVEL;
   int bx = 93, bw = 280, by = 158, bh = 22;
-  gfx->fillRoundRect(bx, by, bw, bh, 6, UI_TRACK);
+  gfx->fillRoundRect(bx, by, bw, bh, 6, UI_TRACK_TEXT);
   int fw = (bw - 4) * into / MINUTES_PER_LEVEL;
   if (fw > 0) gfx->fillRoundRect(bx + 2, by + 2, fw, bh - 4, 5, UI_BAR_OK);
   char nx[26];
   snprintf(nx, sizeof(nx), T(S_NEXT_LVL_FMT), MINUTES_PER_LEVEL - into, pet.level() + 1);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(nx) * 6, by + 32);
-  gfx->print(nx);
+  uiTextFit(UIF_SMALL, CX, by + 46, nx, UI_INK, 1, 300);
 
   // evolution status
-  gfx->setTextColor(UI_TRACK);
-  gfx->setCursor(CX - cjkCols(T(S_EVO_LABEL)) * 6, 230);
-  gfx->print(T(S_EVO_LABEL));
+  uiTextFit(UIF_SMALL, CX, 244, T(S_EVO_LABEL), UI_TRACK_TEXT, 1, 300);
   char evoBuf[28];
   const char *evo;
   uint16_t evoCol = UI_INK;
@@ -5320,26 +5371,18 @@ void renderCardProgress() {
       evo = evoBuf;
     }
   }
-  gfx->setTextColor(evoCol);
-  gfx->setCursor(CX - cjkCols(evo) * 6, 256);
-  gfx->print(evo);
+  uiTextFit(UIF_SMALL, CX, 270, evo, evoCol, 1, 300);
 
   // the day inherited from an early retire, said out loud -- otherwise this
   // creature simply evolves late and the player has no way to know why
   if (pet.evoPenalty()) {
-    gfx->setTextSize(1);
-    gfx->setTextColor(UI_BAR_WARN);
-    gfx->setCursor(CX - (int)cjkCols(T(S_EVO_SLOW)) * 3, 286);
-    gfx->print(T(S_EVO_SLOW));
-    gfx->setTextSize(2);
+    uiTextFit(UIF_TINY, CX, 296, T(S_EVO_SLOW), UI_BAR_WARN, 1, 330);
   }
 
   // mistakes (they delay evolution)
   char ms[24];
   snprintf(ms, sizeof(ms), T(S_MISTAKES_FMT), pet.careMistakes);
-  gfx->setTextColor(pet.careMistakes > 0 ? UI_BAR_BAD : UI_INK);
-  gfx->setCursor(CX - cjkCols(ms) * 6, 312);
-  gfx->print(ms);
+  uiTextFit(UIF_SMALL, CX, 326, ms, pet.careMistakes > 0 ? UI_BAR_BAD : UI_INK, 1, 300);
 }
 
 void renderCard() {
@@ -5353,13 +5396,10 @@ void renderCard() {
   // page indicator + help
   for (int i = 0; i < CARD_PAGES; i++) {
     int dx = CX - (CARD_PAGES - 1) * 13 + i * 26;
-    if (i == cardPage) gfx->fillCircle(dx, 374, 5, UI_INK);
-    else gfx->drawCircle(dx, 374, 4, UI_INK);
+    if (i == cardPage) gfx->fillCircle(dx, 394, 5, UI_INK);
+    else gfx->drawCircle(dx, 394, 4, UI_INK);
   }
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_BACK)) * 6, 398);
-  gfx->print(T(S_BACK));
+  uiText(UIF_SMALL, CX, 430, T(S_BACK), UI_TRACK_TEXT, 1);
   gfx->flush();
 }
 
@@ -5389,15 +5429,13 @@ void drawMenu() {
     int y = MENU_ROW_Y(i);
     bool close = (i == MENU_ROWS - 1);
     bool dead = (i == 3 && !pet.canRetireNow());   // an egg or a companion
+    bool retire = (i == 3 && !dead);               // destructive: red, white text
     gfx->fillRoundRect(MENU_X + 18, y, MENU_W - 36, MENU_ROW_H, 12,
-                       close || dead ? UI_TRACK : UI_BG_DAY);
+                       retire ? UI_BAR_BAD : close || dead ? UI_TRACK_TEXT : UI_BG_DAY);
     gfx->drawRoundRect(MENU_X + 18, y, MENU_W - 36, MENU_ROW_H, 12, UI_INK);
     char lbl[28];
     menuRowLabel(i, lbl, sizeof(lbl));
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - (int)cjkCols(lbl) * 6, y + MENU_ROW_H / 2 - 8);
-    gfx->print(lbl);
+    uiTextFit(UIF_SMALL, CX, uiMidY(UIF_SMALL, y, MENU_ROW_H), lbl, retire ? UI_WHITE : UI_INK, 1, MENU_W - 60);   // one size for every row
   }
 }
 
@@ -5417,10 +5455,7 @@ void renderTrain() {
   gfx->fillRoundRect(TRAIN_X, TRAIN_Y, TRAIN_W, TRAIN_H, 18, UI_WHITE);
   gfx->drawRoundRect(TRAIN_X, TRAIN_Y, TRAIN_W, TRAIN_H, 18, UI_INK);
 
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(T(S_TRAIN)) * 6, TRAIN_Y + 20);
-  gfx->print(T(S_TRAIN));
+  uiTextFit(UIF_MID, CX, TRAIN_Y + 38, T(S_TRAIN), UI_INK, 1, TRAIN_W - 60);
 
   const char *lbl[3] = { T(S_TR_ATK), T(S_TR_SPE), T(S_TR_DEF) };
   uint8_t cur[3] = { pet.trAtk, pet.trSpe, pet.trDef };
@@ -5430,25 +5465,19 @@ void renderTrain() {
     int y = TRAIN_ROW_Y(i);
     bool passive = false;      // every row opens a game now, DEF included
     gfx->fillRoundRect(TRAIN_X + 18, y, TRAIN_W - 36, TRAIN_ROW_H, 12,
-                       passive ? UI_TRACK : UI_BG_DAY);
+                       passive ? UI_TRACK_TEXT : UI_BG_DAY);
     gfx->drawRoundRect(TRAIN_X + 18, y, TRAIN_W - 36, TRAIN_ROW_H, 12, UI_INK);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(TRAIN_X + 32, y + 10);
-    gfx->print(lbl[i]);
+    uiTextFit(UIF_SMALL, TRAIN_X + 32, y + 26, lbl[i], UI_INK, 0, TRAIN_W - 64);
 
     uint8_t pct = trainPct(cur[i], cap[i]);
     int bx = TRAIN_X + 32, bw = TRAIN_W - 64, bh = 12, by = y + 34;
-    gfx->fillRoundRect(bx, by, bw, bh, 4, UI_TRACK);
+    gfx->fillRoundRect(bx, by, bw, bh, 4, UI_TRACK_TEXT);
     int fw = (bw - 4) * pct / 100;
     if (fw > 0)
       gfx->fillRoundRect(bx + 2, by + 2, fw, bh - 4, 3, pct >= 100 ? UI_BAR_OK : UI_BAR_WARN);
   }
 
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(1);
-  gfx->setCursor(CX - (int)cjkCols(T(S_TR_DEF_HINT)) * 3, TRAIN_Y + TRAIN_H - 22);
-  gfx->print(T(S_TR_DEF_HINT));
+  uiTextFit(UIF_TINY, CX, TRAIN_Y + TRAIN_H - 12, T(S_TR_DEF_HINT), UI_INK, 1, TRAIN_W - 24);
   gfx->flush();   // without this the panel never updates and the screen freezes
 }
 
@@ -5461,19 +5490,13 @@ void renderBox() {
   gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
   char head[32];
   snprintf(head, sizeof(head), T(S_BOX_FMT), party.boxCount(), BOX_SLOTS);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(head) * 6, 40);
-  gfx->print(head);
+  uiTextFit(UIF_SMALL, CX, 54, head, UI_INK, 1, 260);
   if (boxSwapFrom) {
     const PartyMon &p = party.slots[boxSwapFrom - 1];
     char sub[40];
     snprintf(sub, sizeof(sub), T(S_BOX_SWAP),
              p.empty() ? "-" : (p.nick[0] ? p.nick : DEX_TBL[p.dex].name));
-    gfx->setTextColor(UI_BAR_WARN);
-    gfx->setTextSize(1);
-    gfx->setCursor(CX - (int)cjkCols(sub) * 3, 64);
-    gfx->print(sub);
+    uiTextFit(UIF_TINY, CX, 76, sub, UI_BAR_WARN, 1, 300);
   }
   for (uint8_t i = 0; i < BOX_PER_PAGE; i++) {
     uint8_t idx = boxPage * BOX_PER_PAGE + i;
@@ -5482,25 +5505,20 @@ void renderBox() {
     int x = PARTY_GRID_X + (i % 2) * (PARTY_CELL_W + 10);
     int y = 88 + (i / 2) * (PARTY_CELL_H + 8);
     gfx->fillRoundRect(x, y, PARTY_CELL_W, PARTY_CELL_H, 10,
-                       m.empty() ? UI_TRACK : UI_WHITE);
+                       m.empty() ? UI_TRACK_TEXT : UI_WHITE);
     gfx->drawRoundRect(x, y, PARTY_CELL_W, PARTY_CELL_H, 10, UI_INK);
     if (m.empty()) {
-      gfx->setTextColor(0x8410);
-      gfx->setTextSize(1);
-      gfx->setCursor(x + PARTY_CELL_W / 2 - 18, y + PARTY_CELL_H / 2 - 4);
-      gfx->print(T(S_PARTY_EMPTY));
+      uiTextFit(UIF_SMALL, x + PARTY_CELL_W / 2, y + PARTY_CELL_H / 2 + 7,
+                T(S_PARTY_EMPTY), 0x8410, 1, PARTY_CELL_W - 8);
       continue;
     }
     const uint8_t *th = thumbs.get(m.dex);
     if (th) drawThumb(th, x - 14, y - 4, 2, false);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(1);
-    gfx->setCursor(x + 52, y + 16);
-    gfx->print(m.nick[0] ? m.nick : DEX_TBL[m.dex].name);
+    uiTextFit(UIF_SMALL, x + 52, y + 28, m.nick[0] ? m.nick : DEX_TBL[m.dex].name,
+              UI_INK, 0, PARTY_CELL_W - 58);
     char l[16];
     snprintf(l, sizeof(l), "Lv.%u%s", (unsigned)m.level, m.shiny ? " *" : "");
-    gfx->setCursor(x + 52, y + 34);
-    gfx->print(l);
+    uiText(UIF_TINY, x + 56, y + 52, l, m.shiny ? UI_BAR_WARN : UI_INK, 0);
   }
   uint8_t pages = BOX_SLOTS / BOX_PER_PAGE;
   for (uint8_t i = 0; i < pages; i++) {
@@ -5508,10 +5526,7 @@ void renderBox() {
     if (i == boxPage) gfx->fillCircle(dx, 366, 5, UI_INK);
     else gfx->drawCircle(dx, 366, 4, UI_INK);
   }
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_BACK)) * 6, 392);
-  gfx->print(T(S_BACK));
+  uiText(UIF_SMALL, CX, 406, T(S_BACK), UI_TRACK_TEXT, 1);
   gfx->flush();
 }
 
@@ -5581,35 +5596,22 @@ void boxTap(int16_t x, int16_t y) {
 void drawPartySlot(int i, int x, int y) {
   const PartyMon &m = party.slots[i];
   gfx->fillRoundRect(x, y, PARTY_CELL_W, PARTY_CELL_H, 10,
-                     m.empty() ? UI_TRACK : UI_WHITE);
+                     m.empty() ? UI_TRACK_TEXT : UI_WHITE);
   gfx->drawRoundRect(x, y, PARTY_CELL_W, PARTY_CELL_H, 10, UI_INK);
   if (m.empty()) {
-    gfx->setTextColor(0x8410);
-    gfx->setTextSize(2);
-    gfx->setCursor(x + (PARTY_CELL_W - (int)cjkCols(T(S_PARTY_EMPTY)) * 12) / 2,
-                   y + PARTY_CELL_H / 2 - 8);
-    gfx->print(T(S_PARTY_EMPTY));
+    uiTextFit(UIF_SMALL, x + PARTY_CELL_W / 2, y + PARTY_CELL_H / 2 + 7,
+              T(S_PARTY_EMPTY), 0x8410, 1, PARTY_CELL_W - 8);
     return;
   }
   const uint8_t *th = thumbs.get(m.dex);
   if (th) drawThumb(th, x - 6, y - 3, 1, false);
   const DexEntry &d = DEX_TBL[m.dex];
   const char *nm = m.nick[0] ? m.nick : d.name;
-  gfx->setTextColor(d.accent);
-  gfx->setTextSize(1);
-  gfx->setCursor(x + 62, y + 18);
-  gfx->print(nm);
-  if (m.shiny) {
-    gfx->setTextColor(UI_BAR_WARN);
-    gfx->setCursor(x + 62 + (int)cjkCols(nm) * 6 + 3, y + 18);
-    gfx->print("*");
-  }
+  uiTextFit(UIF_SMALL, x + 60, y + 28, nm, d.accent, 0, PARTY_CELL_W - 60 - 6);
   char lv[12];
   snprintf(lv, sizeof(lv), T(S_LVL_FMT), (unsigned)m.level);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(x + 62, y + 36);
-  gfx->print(lv);
+  uiText(UIF_SMALL, x + 62, y + 50, lv, UI_INK, 0);
+  if (m.shiny) uiText(UIF_SMALL, x + 62 + uiTextWidth(UIF_SMALL, lv) + 6, y + 50, "*", UI_BAR_WARN, 0);
 }
 
 void renderParty() {
@@ -5618,10 +5620,7 @@ void renderParty() {
 
   char head[24];
   snprintf(head, sizeof(head), T(S_PARTY_FMT), party.count());
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - (int)cjkCols(head) * 9, 42);
-  gfx->print(head);
+  uiTextFit(UIF_BIG, CX, 63, head, UI_INK, 1, 250);
 
   // the box lives behind this button; it also shows how full it is, so the
   // player knows there is anything in there without opening it
@@ -5632,10 +5631,7 @@ void renderParty() {
     gfx->fillRoundRect(BOXBTN_X, BOXBTN_Y, BOXBTN_W, BOXBTN_H, 10,
                        armed ? UI_BAR_WARN : UI_BG_DAY);
     gfx->drawRoundRect(BOXBTN_X, BOXBTN_Y, BOXBTN_W, BOXBTN_H, 10, UI_INK);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(233 - (int)cjkCols(bl) * 6, BOXBTN_Y + 12);
-    gfx->print(bl);
+    uiTextFit(UIF_SMALL, 233, BOXBTN_Y + 26, bl, UI_INK, 1, BOXBTN_W - 12);
   }
 
   if (boxSel) {
@@ -5643,18 +5639,12 @@ void renderParty() {
     char sw[44];
     snprintf(sw, sizeof(sw), T(S_BOX_SWAP),
              b.nick[0] ? b.nick : DEX_TBL[b.dex].name);
-    gfx->setTextColor(UI_BAR_WARN);
-    gfx->setTextSize(1);
-    gfx->setCursor(CX - (int)cjkCols(sw) * 3, 72);
-    gfx->print(sw);
+    uiTextFit(UIF_TINY, CX, 80, sw, UI_BAR_WARN, 1, 300);
   }
 
   // when a newcomer is waiting, say so instead of the usual hint
   if (partyPick) {
-    gfx->setTextColor(UI_BAR_BAD);
-    gfx->setTextSize(1);
-    gfx->setCursor(CX - (int)cjkCols(T(S_PARTY_FULL)) * 3, 74);
-    gfx->print(T(S_PARTY_FULL));
+    uiTextFit(UIF_TINY, CX, 82, T(S_PARTY_FULL), UI_BAR_BAD, 1, 300);
   }
 
   for (int i = 0; i < PARTY_SLOTS; i++) {
@@ -5666,12 +5656,10 @@ void renderParty() {
   // exit: an explicit button, always in the same place
   const char *ex = partyPick ? T(S_PARTY_LETGO) : T(S_CLOSE);
   gfx->fillRoundRect(PARTYCLOSE_X, PARTYCLOSE_Y, PARTYCLOSE_W, PARTYCLOSE_H, 12,
-                     partyPick ? UI_BAR_BAD : UI_TRACK);
+                     partyPick ? UI_BAR_BAD : UI_TRACK_TEXT);
   gfx->drawRoundRect(PARTYCLOSE_X, PARTYCLOSE_Y, PARTYCLOSE_W, PARTYCLOSE_H, 12, UI_INK);
-  gfx->setTextColor(partyPick ? UI_WHITE : UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(ex) * 6, PARTYCLOSE_Y + 14);
-  gfx->print(ex);
+  uiTextFit(UIF_SMALL, CX, PARTYCLOSE_Y + 28, ex, partyPick ? UI_WHITE : UI_INK, 1,
+            PARTYCLOSE_W - 12);
   gfx->flush();
 }
 
@@ -5699,32 +5687,21 @@ void openKeyboard() { openKeyboardFor(KB_PET); }
 void renderKeyboard() {
   gfx->fillScreen(RGB565_BLACK);
   gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(T(S_NAME)) * 6, 56);
-  gfx->print(T(S_NAME));
+  uiTextFit(UIF_SMALL, CX, 70, T(S_NAME), UI_INK, 1, 240);
   // current buffer
   gfx->fillRoundRect(83, 84, 300, 40, 8, UI_WHITE);
   gfx->drawRoundRect(83, 84, 300, 40, 8, UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(95, 94);
-  gfx->print(nameLen ? nameBuf : "_");
+  uiTextFit(UIF_BIG, 95, 112, nameLen ? nameBuf : "_", UI_INK, 0, 276);
 
   for (int i = 0; i < 30; i++) {
     int x = KB_X + (i % KB_COLS) * KB_W, y = KB_Y + (i / KB_COLS) * KB_H;
     bool special = (i >= 28);
     gfx->fillRoundRect(x, y, KB_W - 6, KB_H - 6, 6, special ? UI_BAR_WARN : UI_WHITE);
     gfx->drawRoundRect(x, y, KB_W - 6, KB_H - 6, 6, UI_INK);
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    if (i < 28) {
-      gfx->setCursor(x + KB_W / 2 - 9, y + KB_H / 2 - 10);
-      gfx->print(KB_KEYS[i]);
-    } else {
-      const char *lab = (i == 28) ? "<-" : "OK";
-      gfx->setCursor(x + KB_W / 2 - 15, y + KB_H / 2 - 10);
-      gfx->print(lab);
-    }
+    char kl[3] = { 0, 0, 0 };
+    if (i < 28) kl[0] = KB_KEYS[i];
+    else strcpy(kl, (i == 28) ? "<-" : "OK");
+    uiText(UIF_SMALL, x + (KB_W - 6) / 2, y + (KB_H - 6) / 2 + 8, kl, UI_INK, 1);
   }
   gfx->flush();
 }
@@ -5778,12 +5755,7 @@ void renderGallery() {
     char head[24];
     snprintf(head, sizeof(head), "N.%03d %s%s", galleryDetail,
              pet.isShinyRegistered(galleryDetail) ? "*" : "", reg ? d.name : "???");
-    gfx->setTextColor(reg ? d.accent : UI_INK);
-    int glen = cjkCols(head);
-    int gts = (glen <= 13) ? 3 : 2;  // auto-encoge nombres largos (no caben a t3)
-    gfx->setTextSize(gts);
-    gfx->setCursor(CX - glen * (gts == 3 ? 9 : 6), gts == 3 ? 56 : 60);
-    gfx->print(head);
+    uiTextFit(UIF_BIG, CX, 77, head, reg ? d.accent : UI_INK, 1, 260);  // long names step down
     if (galleryPmd.loaded) {
       // animated and in colour if registered; static silhouette if not ("?" style)
       drawPmdActM(galleryPmd, PMD_IDLE, CX, 300, reg ? millis() : 0, true, !reg, 6);
@@ -5791,10 +5763,7 @@ void renderGallery() {
       const uint8_t *t = thumbs.get(galleryDetail);
       if (t) drawThumb(t, CX - GAL_CELL, 135, 4, !reg);
     }
-    gfx->setTextColor(UI_INK);
-    gfx->setTextSize(2);
-    gfx->setCursor(CX - cjkCols(T(S_DETAIL_BACK)) * 6, 408);
-    gfx->print(T(S_DETAIL_BACK));
+    uiText(UIF_SMALL, CX, 422, T(S_DETAIL_BACK), UI_INK, 1);
     gfx->flush();
     return;
   }
@@ -5810,10 +5779,7 @@ void renderGallery() {
   const RegionInfo &grg = REGIONS[galleryRegion % GAL_REGIONS];
   snprintf(head, sizeof(head), "%s %u/%u", grg.name,
            pet.registeredCountIn(grg.lo, grg.hi), (unsigned)GAL_SPAN);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - cjkCols(head) * 9, 36);
-  gfx->print(head);
+  uiTextFit(UIF_BIG, CX, 68, head, UI_INK, 1, 250);
 
   for (int r = 0; r < 4; r++) {
     for (int c = 0; c < 4; c++) {
@@ -5824,18 +5790,12 @@ void renderGallery() {
       if (t) {
         drawThumb(t, x, y, 2, !pet.isRegistered(dex));
         if (pet.isShinyRegistered(dex)) {
-          gfx->setTextColor(UI_BAR_WARN);
-          gfx->setTextSize(2);
-          gfx->setCursor(x + 62, y + 4);
-          gfx->print("*");
+          uiText(UIF_SMALL, x + 62, y + 20, "*", UI_BAR_WARN, 0);
         }
       } else {
         char num[6];
         snprintf(num, sizeof(num), "%d", dex);
-        gfx->setTextColor(UI_TRACK);
-        gfx->setTextSize(2);
-        gfx->setCursor(x + 24, y + 32);
-        gfx->print(num);
+        uiText(UIF_SMALL, x + 40, y + 46, num, UI_TRACK_TEXT, 1);
       }
     }
   }
@@ -5844,10 +5804,7 @@ void renderGallery() {
   // them to find where you are is worse than reading the number.
   char pg[12];
   snprintf(pg, sizeof(pg), "%d/%d", galleryPage + 1, (int)GAL_PAGES);
-  gfx->setTextColor(UI_TRACK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(pg) * 6, 428);
-  gfx->print(pg);
+  uiText(UIF_SMALL, CX, 442, pg, UI_TRACK_TEXT, 1);
   gfx->flush();
 }
 
@@ -5871,10 +5828,37 @@ void galleryTap(int16_t x, int16_t y) {
   galleryPmd.load(dex, pet.isShinyRegistered(dex));
 }
 
+// The RTC chip counts live; this just reads it (an I2C transaction) at most
+// every 250 ms, since the main screen redraws at 10 fps. Minutes are the finest
+// the header shows, so a 250 ms cache can lag a minute rollover by a fraction
+// of a second at most.
+static const char *headerTimeText(char *t, size_t n) {
+  static uint32_t cachedE = 0, cachedAt = 0;
+  uint32_t ms = millis();
+  if (!cachedAt || ms - cachedAt >= 250) { cachedE = rtcEpoch(); cachedAt = ms ? ms : 1; }
+  if (!cachedE) return nullptr;   // RTC not valid: show nothing rather than a wrong time
+  int h = (cachedE / 3600) % 24;
+  snprintf(t, n, "%d:%02d %s", h % 12 == 0 ? 12 : h % 12,
+           (int)((cachedE / 60) % 60), h < 12 ? "AM" : "PM");
+  return t;
+}
+
+// The time and the battery share one row, centred as a group, so neither
+// needs its own band under the other.
 void drawBattery() {
   int pc = batPercent();
-  if (pc < 0) return;  // no battery connected
-  int x = CX - 14, y = 12, w = 24, h = 11;
+  char tbuf[16];
+  const char *ts = headerTimeText(tbuf, sizeof(tbuf));
+  const int GAP = 8, BW = 27;       // battery body 24 + 3 terminal
+  int tw = ts ? uiTextWidth(UIF_SMALL, ts) : 0;
+  int total = tw + (ts && pc >= 0 ? GAP : 0) + (pc >= 0 ? BW : 0);
+  if (!total) return;               // no clock and no battery
+  int x0 = CX - total / 2;
+  if (ts) {
+    uiText(UIF_SMALL, x0, 19 + 14, ts, inkColor(), 0);
+  }
+  if (pc < 0) return;               // no battery connected
+  int x = x0 + tw + (ts ? GAP : 0), y = 22, w = 24, h = 11;
   bool charging = batCharging();
   uint16_t col = charging ? UI_BAR_OK
                  : (pc >= 40) ? inkColor()
@@ -5894,16 +5878,66 @@ void drawBattery() {
   }
 }
 
+// Edge hints for the two horizontal swipes off the main screen: right opens the
+// party (pokeball), left opens the gym ladder (badge). Shown only while the
+// swipe is actually allowed -- onSwipe() refuses it during a ceremony, a
+// pending confirm and the starter choice -- and nudged back and forth so they
+// read as a gesture rather than decoration.
+static void drawSwipeHints() {
+  if (pet.ceremony || confirmUntil || pet.awaitingStarter()) return;
+  const int cy = 233;
+  const int nudge = ((millis() / 500) % 2) ? 3 : 0;
+  uint16_t ink = inkColor();
+  int lx = 12 + nudge;                       // party: swipe RIGHT, chevron points right
+  for (int k = 0; k < 2; k++) {              // two passes = a 2 px stroke
+    gfx->drawLine(lx + k, cy - 10, lx + 8 + k, cy, ink);
+    gfx->drawLine(lx + 8 + k, cy, lx + k, cy + 10, ink);
+  }
+  gfx->fillCircle(lx + 6, cy + 24, 7, UI_WHITE);      // pokeball
+  gfx->drawCircle(lx + 6, cy + 24, 7, ink);
+  gfx->drawFastHLine(lx - 1, cy + 24, 14, ink);
+  gfx->fillCircle(lx + 6, cy + 24, 2, ink);
+  int rx = 454 - nudge;                      // gym: swipe LEFT, chevron points left
+  for (int k = 0; k < 2; k++) {
+    gfx->drawLine(rx - k, cy - 10, rx - 8 - k, cy, ink);
+    gfx->drawLine(rx - 8 - k, cy, rx - k, cy + 10, ink);
+  }
+  int bx = rx - 6, by = cy + 24;                      // badge
+  gfx->fillTriangle(bx, by - 8, bx - 7, by, bx + 7, by, UI_BAR_WARN);
+  gfx->fillTriangle(bx, by + 8, bx - 7, by, bx + 7, by, UI_BAR_WARN);
+  gfx->drawLine(bx, by - 8, bx + 7, by, ink);
+  gfx->drawLine(bx + 7, by, bx, by + 8, ink);
+  gfx->drawLine(bx, by + 8, bx - 7, by, ink);
+  gfx->drawLine(bx - 7, by, bx, by - 8, ink);
+}
+
+// Menu icon beside the clock: the name/status band is a button, and nothing
+// said so. Right of the time+battery group (at most ~131 px wide, centred).
+static void drawMenuHint() {
+  if (pet.ceremony || confirmUntil || pet.awaitingStarter()) return;
+  const int x = CX + 78, y = 22;
+  for (int i = 0; i < 3; i++) gfx->fillRoundRect(x, y + i * 6, 18, 3, 1, inkColor());
+}
+
+// Swipe UP opens the creature's card. Drawn AFTER the lower panel (which paints
+// over everything below y 312) and only where onSwipeV() allows it: a creature,
+// not an egg, with no dialog or food picker open. Nudges upward like the side hints.
+void drawUpHint() {
+  if (pet.isEgg() || pet.ceremony || confirmUntil || feedMenuUntil || pet.awaitingStarter()) return;
+  const int cx = CX, cy = 448 - (((millis() / 500) % 2) ? 3 : 0);
+  uint16_t ink = inkColor();
+  for (int k = 0; k < 2; k++) {
+    gfx->drawLine(cx - 10, cy + 8 + k, cx, cy + k, ink);
+    gfx->drawLine(cx, cy + k, cx + 10, cy + 8 + k, ink);
+  }
+}
+
 void drawHeader(const char *name, uint16_t nameColor, const char *msg) {
   drawBattery();
-  gfx->setTextColor(nameColor);
-  gfx->setTextSize(3);
-  gfx->setCursor(CX - cjkCols(name) * 9, 52);
-  gfx->print(name);
-  gfx->setTextColor(inkColor());
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - cjkCols(msg) * 6, 90);
-  gfx->print(msg);
+  drawSwipeHints();
+  drawMenuHint();
+  uiTextFit(UIF_BIG, CX, 48 + 21, name, nameColor, 1, 270);
+  uiTextFit(UIF_SMALL, CX, 84 + 14, msg, inkColor(), 1, 320);
 }
 
 // ceremony animation (10s): farewell = bow with hearts and it
@@ -5932,7 +5966,7 @@ void drawCeremony() {
       x = CX - (int)(((t - 0.30f) / 0.70f) * (CX + 120));
       fade = (t > 0.6f) && ((now / 160) % 2 == 0);  // blinks toward the silhouette
     }
-    drawPmdAct(act, x, y, now, true, fade, 5);  // fade=silhouette: dissolves as it leaves
+    drawPmdActZ(pmd, act, x, y, now, true, fade, 5, PET_ZOOM, PET_MAX_PX);  // fade=silhouette: dissolves as it leaves
     // tear falling from the creature
     if (t < 0.55f) {
       int ty = y - 150 + (int)((now / 6) % 40);
@@ -5961,7 +5995,7 @@ void drawCeremony() {
     act = pmd.has(PMD_WALKR) ? PMD_WALKR : PMD_IDLE;
     x = CX + (int)(((t - 0.45f) / 0.55f) * (CX + 140));
   }
-  drawPmdAct(act, x, y, now, true, false, 5);
+  drawPmdActZ(pmd, act, x, y, now, true, false, 5, PET_ZOOM, PET_MAX_PX);
   if (pet.showHeart())                     // big heart following the creature
     drawMap(SPR_HEART, 32, x + 50, y - 190, 2, false);
 }
@@ -5984,32 +6018,13 @@ void drawConfirmPanel(const char *q, const char *sub1, const char *sub2,
                       const char *o2, uint16_t c2, uint16_t t2) {
   gfx->fillRoundRect(CONFIRM_X, CONFIRM_Y, CONFIRM_W, CONFIRM_H, 16, UI_WHITE);
   gfx->drawRoundRect(CONFIRM_X, CONFIRM_Y, CONFIRM_W, CONFIRM_H, 16, UI_INK);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(q) * 6, 176);
-  gfx->print(q);
-  if (sub1 || sub2) {
-    gfx->setTextSize(1);
-    gfx->setTextColor(subCol);
-    if (sub1) {
-      gfx->setCursor(CX - (int)cjkCols(sub1) * 3, sub2 ? 188 : 194);
-      gfx->print(sub1);
-    }
-    if (sub2) {
-      gfx->setCursor(CX - (int)cjkCols(sub2) * 3, 197);
-      gfx->print(sub2);
-    }
-    gfx->setTextSize(2);
-    gfx->setTextColor(UI_INK);
-  }
+  uiTextFit(UIF_SMALL, CX, (sub1 || sub2) ? 158 : 176 + 14, q, UI_INK, 1, CONFIRM_W - 24);
+  if (sub1) uiTextFit(UIF_TINY, CX, sub2 ? 181 : 190, sub1, subCol, 1, CONFIRM_W - 20);
+  if (sub2) uiTextFit(UIF_TINY, CX, 200, sub2, subCol, 1, CONFIRM_W - 20);
   gfx->fillRoundRect(CONFIRM_BTN_X, CONFIRM_B1_Y, CONFIRM_BTN_W, CONFIRM_BTN_H, 12, c1);
-  gfx->setTextColor(t1);
-  gfx->setCursor(CX - (int)cjkCols(o1) * 6, CONFIRM_B1_Y + 18);
-  gfx->print(o1);
+  uiTextFit(UIF_SMALL, CX, CONFIRM_B1_Y + 18 + 14, o1, t1, 1, CONFIRM_BTN_W - 20);
   gfx->fillRoundRect(CONFIRM_BTN_X, CONFIRM_B2_Y, CONFIRM_BTN_W, CONFIRM_BTN_H, 12, c2);
-  gfx->setTextColor(t2);
-  gfx->setCursor(CX - (int)cjkCols(o2) * 6, CONFIRM_B2_Y + 18);
-  gfx->print(o2);
+  uiTextFit(UIF_SMALL, CX, CONFIRM_B2_Y + 18 + 14, o2, t2, 1, CONFIRM_BTN_W - 20);
 }
 
 void drawChoiceDialog() {
@@ -6018,7 +6033,7 @@ void drawChoiceDialog() {
   uint16_t c1, c2, t1, t2;
   if (choiceKind == 1) {  // evolution
     q = T(S_EVO_Q); o1 = T(S_EVO_TAP); o2 = T(S_EVO_KEEP);
-    c1 = UI_BAR_BAD; t1 = UI_WHITE; c2 = UI_TRACK; t2 = UI_INK;
+    c1 = UI_BAR_BAD; t1 = UI_WHITE; c2 = UI_TRACK_TEXT; t2 = UI_INK;
   } else if (choiceKind == 3) {   // retirement on request
     q = T(S_RETIRE_Q); o1 = T(S_FAR_GO); o2 = T(S_FAR_STAY);
     c1 = UI_BAR_WARN; t1 = UI_INK; c2 = UI_BAR_OK; t2 = UI_WHITE;
@@ -6043,11 +6058,8 @@ void drawEvolveButton() {
   gfx->fillRoundRect(x, y, w, h, 18, UI_BAR_BAD);
   gfx->drawRoundRect(x, y, w, h, 18, UI_WHITE);
   gfx->drawRoundRect(x + 2, y + 2, w - 4, h - 4, 16, UI_WHITE);
-  gfx->setTextColor(UI_WHITE);
-  gfx->setTextSize(3);
   const char *t = T(S_EVO_TAP);
-  gfx->setCursor(CX - (int)cjkCols(t) * 9, y + h / 2 - 11);
-  gfx->print(t);
+  uiTextFit(UIF_BIG, CX, y + h / 2 - 11 + 21, t, UI_WHITE, 1, EVO_BTN_W - 24);
 }
 
 // golden farewell CTA button: "<name> wants to tell you something..."
@@ -6060,10 +6072,7 @@ void drawFarewellButton() {
   char buf[52];
   const char *nm = pet.nick[0] ? pet.nick : DEX_TBL[pet.speciesId].name;
   snprintf(buf, sizeof(buf), T(S_FAREWELL_BTN), nm);
-  gfx->setTextColor(UI_INK);
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(buf) * 6, y + h / 2 - 8);
-  gfx->print(buf);
+  uiTextFit(UIF_SMALL, CX, y + h / 2 - 8 + 14, buf, UI_INK, 1, FAR_BTN_W - 24);
 }
 
 // gloomy runaway CTA button from neglect: "<name> feels abandoned..."
@@ -6077,10 +6086,7 @@ void drawRunawayButton() {
   char buf[52];
   const char *nm = pet.nick[0] ? pet.nick : DEX_TBL[pet.speciesId].name;
   snprintf(buf, sizeof(buf), T(S_RUNAWAY_BTN), nm);
-  gfx->setTextColor(C565(0xc8, 0xd2, 0xe0));
-  gfx->setTextSize(2);
-  gfx->setCursor(CX - (int)cjkCols(buf) * 6, y + h / 2 - 8);
-  gfx->print(buf);
+  uiTextFit(UIF_SMALL, CX, y + h / 2 - 8 + 14, buf, C565(0xc8, 0xd2, 0xe0), 1, FAR_BTN_W - 24);
 }
 
 // epic evolution animation: radial halo + spinning rays + sprite blink
@@ -6106,8 +6112,8 @@ void drawEvolveFX(uint32_t now) {
   // end (t>0.9) it stays fixed on the new one for the reveal flash
   int period = 60 + (int)(220 * (1.0f - t));
   bool showOld = t < 0.9f && evoPmd.loaded && ((now / period) % 2) == 0;
-  if (showOld) drawPmdActM(evoPmd, PMD_IDLE, cx, PET_GROUND, 0, true, true, 5);
-  else drawPmdAct(PMD_IDLE, cx, PET_GROUND, 0, true, true, 5);
+  if (showOld) drawPmdActZ(evoPmd, PMD_IDLE, cx, PET_GROUND, 0, true, true, 5, PET_ZOOM, PET_MAX_PX);
+  else drawPmdActZ(pmd, PMD_IDLE, cx, PET_GROUND, 0, true, true, 5, PET_ZOOM, PET_MAX_PX);
   // sparks shooting out
   for (int i = 0; i < 10; i++) {
     float a = i * (float)(PI / 5) + t * 4.0f;
@@ -6135,13 +6141,8 @@ void drawPet() {
     gfx->setTextSize(6);
     gfx->setCursor(CX - 18, PET_CY - 80);
     gfx->print("?");
-    gfx->setTextSize(2);
-    const char *l1 = T(S_NO_SPRITES);
-    gfx->setCursor(CX - (int)cjkCols(l1) * 6, PET_CY - 4);
-    gfx->print(l1);
-    const char *l2 = T(S_LOAD_SPRITES);
-    gfx->setCursor(CX - (int)cjkCols(l2) * 6, PET_CY + 20);
-    gfx->print(l2);
+    uiTextFit(UIF_SMALL, CX, PET_CY + 10, T(S_NO_SPRITES), inkColor(), 1, 360);
+    uiTextFit(UIF_SMALL, CX, PET_CY + 38, T(S_LOAD_SPRITES), inkColor(), 1, 360);
     return;
   }
   const Species &sp = SPECIES[fi];
@@ -6175,7 +6176,7 @@ void drawPet() {
   if (m == MOOD_EATING) overlayMouth(sp, x, y, s, true);
   else if (m == MOOD_SAD) overlayMouth(sp, x, y, s, false);
 
-  if (pet.showHeart()) drawMap(SPR_HEART, 32, x + 20 * s, y - 2 * s, 2, false);
+  if (pet.showHeart()) drawHeartFloat(x + 16 * s, y);
 }
 
 // ---------- bath scene ----------
@@ -6211,24 +6212,35 @@ void drawBath() {
     return;
   }
   uint32_t left = bathUntil - now;
+  // A bubble is a clear sphere: only the rim is drawn (the creature shows
+  // through), with a bright glint at the upper left and a faint one opposite.
+  // The old white disc with a dark dot read as an eyeball.
+  const uint16_t rim = C565(0x8f, 0xd0, 0xf0), rimIn = C565(0xdf, 0xf4, 0xff);
+  float t = now / 220.0f;
   if (left > 800) {
     // foam: bubbles swaying and slowly rising
-    float t = now / 220.0f;
     for (auto &b : bubbles) {
       int bx = b.x + (int)(sinf(t + b.ph) * 6);
       int by = b.y - (int)((3000 - left) / 90);
-      gfx->fillCircle(bx, by, b.r, UI_WHITE);
-      gfx->drawCircle(bx, by, b.r, 0x7E3D);
-      gfx->fillCircle(bx - b.r / 3, by - b.r / 3, b.r / 4, UI_BG_DAY);
+      gfx->drawCircle(bx, by, b.r, rim);
+      gfx->drawCircle(bx, by, b.r - 1, rimIn);
+      for (float a = 3.45f; a < 4.35f; a += 0.13f)         // glint arc, upper left
+        gfx->fillRect(bx + (int)(cosf(a) * b.r * 0.62f), by + (int)(sinf(a) * b.r * 0.62f), 2, 2, UI_WHITE);
+      gfx->fillCircle(bx - b.r * 45 / 100, by - b.r * 45 / 100, b.r / 7 + 1, UI_WHITE);
+      gfx->fillRect(bx + b.r * 35 / 100, by + b.r * 35 / 100, 2, 2, rimIn);   // faint opposite glint
     }
   } else {
-    // the bubbles burst: sparkles
-    for (int i = 0; i < 8; i++) {
-      auto &b = bubbles[i];
-      int sx = b.x + (i % 3) * 6 - 6, sy = b.y - 18;
-      uint16_t col = (i % 2) ? UI_BAR_WARN : UI_WHITE;
-      gfx->fillRect(sx - 6, sy - 1, 13, 3, col);
-      gfx->fillRect(sx - 1, sy - 6, 3, 13, col);
+    // pop: each ring swells and thins out while droplets fly off it
+    float p = (800 - (int)left) / 800.0f;
+    for (auto &b : bubbles) {
+      int bx = b.x + (int)(sinf(t + b.ph) * 6);
+      int by = b.y - 24;                                   // where the rise ended
+      if (p < 0.5f) gfx->drawCircle(bx, by, b.r + (int)(b.r * p * 0.8f), rim);
+      for (int k = 0; k < 6; k++) {
+        float a = k * 1.0472f + b.ph * 0.1f;
+        float d = b.r * (0.9f + p * 1.6f);
+        gfx->fillRect(bx + (int)(cosf(a) * d), by + (int)(sinf(a) * d), 2, 2, (k & 1) ? rimIn : UI_WHITE);
+      }
     }
   }
 }
@@ -6254,8 +6266,13 @@ uint8_t pmdFrameAt(const PmdAct &a, uint32_t t, bool loop) {
 }
 
 // draws an action anchored by its base (centre-x, ground) and returns its scale
-// draws an action of a specific PmdMon (m); drawPmdAct uses the global pmd
-void drawPmdActM(PmdMon &m, uint8_t actId, int cx, int groundY, uint32_t t, bool loop, bool sil, uint8_t maxS) {
+// draws an action of a specific PmdMon (m); drawPmdAct uses the global pmd.
+// zoom100 scales on top of the integer base scale (100 = unchanged, 150 = 1.5x).
+// Pixel edges are floored from the fractional position, so a fractional zoom
+// leaves no gaps between neighbouring pixels. maxPx caps the drawn height when
+// zoomed, so a tall action cannot run up into the header.
+void drawPmdActZ(PmdMon &m, uint8_t actId, int cx, int groundY, uint32_t t, bool loop, bool sil,
+                 uint8_t maxS, uint16_t zoom100, uint16_t maxPx) {
   const PmdAct &a = m.acts[actId];
   if (!a.frames) return;
   uint8_t sBase = m.acts[PMD_IDLE].h ? 170 / m.acts[PMD_IDLE].h : 5;
@@ -6263,19 +6280,26 @@ void drawPmdActM(PmdMon &m, uint8_t actId, int cx, int groundY, uint32_t t, bool
   if (sBase > maxS) sBase = maxS;
   uint8_t s = sBase;
   while (s > 2 && a.h * s > 250) s--;  // actions with a large frame (attack)
+  uint32_t sc = (uint32_t)s * zoom100;                 // scale x100
+  if (zoom100 > 100 && a.h * sc > (uint32_t)maxPx * 100) sc = (uint32_t)maxPx * 100 / a.h;
   uint8_t fi = pmdFrameAt(a, t, loop);
   const uint8_t *fr = a.data + (uint32_t)fi * a.w * a.h;
   // anchor by the feet (a.base), not by canvas height: that way actions
   // with different padding (Hurt, Eat...) all end up at the same ground height
-  int x0 = cx - a.w * s / 2, y0 = groundY - (a.base ? a.base : a.h) * s;
+  int x0 = cx - (int)(a.w * sc / 200), y0 = groundY - (int)((a.base ? a.base : a.h) * sc / 100);
   for (int r = 0; r < a.h; r++) {
     const uint8_t *row = fr + r * a.w;
+    int ya = y0 + (int)(r * sc / 100), yb = y0 + (int)((r + 1) * sc / 100);
     for (int c = 0; c < a.w; c++) {
       uint8_t idx = row[c];
       if (idx == 0xFF) continue;
-      gfx->fillRect(x0 + c * s, y0 + r * s, s, s, sil ? INK_K : m.pal[idx]);
+      int xa = x0 + (int)(c * sc / 100), xb = x0 + (int)((c + 1) * sc / 100);
+      gfx->fillRect(xa, ya, xb - xa, yb - ya, sil ? INK_K : m.pal[idx]);
     }
   }
+}
+void drawPmdActM(PmdMon &m, uint8_t actId, int cx, int groundY, uint32_t t, bool loop, bool sil, uint8_t maxS) {
+  drawPmdActZ(m, actId, cx, groundY, t, loop, sil, maxS, 100, 0);
 }
 void drawPmdAct(uint8_t actId, int cx, int groundY, uint32_t t, bool loop, bool sil, uint8_t maxS) {
   drawPmdActM(pmd, actId, cx, groundY, t, loop, sil, maxS);
@@ -6288,7 +6312,7 @@ void behNext() {
   int r = random(100);
   if (r < 35 && (pmd.has(PMD_WALKL) || pmd.has(PMD_WALKR))) {
     beh.mode = 1;  // walk
-    beh.targetX = 150 + random(176);
+    beh.targetX = 180 + random(106);   // narrower: the creature is wider now
     beh.until = now + 15000;
   } else if (r < 60) {
     // random gesture among the available ones
@@ -6350,9 +6374,14 @@ void drawPetPMD() {
     if (!pmd.has(act)) act = PMD_IDLE;
   }
 
-  drawPmdAct(act, (int)beh.x, PET_GROUND, now - beh.t0, loop || act == PMD_IDLE, false, 5);
+  drawPmdActZ(pmd, act, (int)beh.x, PET_GROUND, now - beh.t0, loop || act == PMD_IDLE, false, 5,
+              PET_ZOOM, PET_MAX_PX);
 
-  if (pet.showHeart()) drawMap(SPR_HEART, 32, (int)beh.x + 50, PET_GROUND - 190, 2, false);
+  if (pet.showHeart()) {
+    int hx, hy;
+    petHeadAnchor(PMD_IDLE, hx, hy);
+    drawHeartFloat(hx, hy);
+  }
 }
 
 // animated sprite from the SD: integer zoom per pixel, frames at their own pace
@@ -6382,7 +6411,7 @@ void drawPetSD() {
   }
 
   // emotes instead of expressions (imported sprites have no anchors)
-  if (pet.showHeart()) drawMap(SPR_HEART, 32, x + w - 30, y - 50, 2, false);
+  if (pet.showHeart()) drawHeartFloat(x + w / 2, y);
 }
 
 // closed eye: erases the 3x4 eye and draws the eyelid
@@ -6406,25 +6435,34 @@ void overlayMouth(const Species &sp, int x, int y, int s, bool open) {
 
 void drawPoops() {
   for (int i = 0; i < pet.poops; i++) {
-    drawMap(SPR_POOP, 32, 36 + i * 46, 244, 2, false);
+    const int px = 36 + i * 46, py = 244;
+    drawMap(SPR_POOP, 32, px, py, 2, false);
+    // two flies circle each pile on out-of-phase, off-round orbits
+    const uint32_t t = millis();
+    for (int f = 0; f < 2; f++) {
+      float a = t * (f ? -0.0071f : 0.0053f) + i * 2.1f + f * 3.0f;
+      int fx = px + 32 + (int)(cosf(a) * (24 + f * 6));
+      int fy = py + 24 + (int)(sinf(a * 1.7f) * (14 + f * 4));
+      bool up = ((t / 70 + f * 3 + i) & 1) != 0;   // wing flutter
+      gfx->fillRect(fx, fy, 3, 3, INK_K);
+      gfx->fillRect(fx - 1, fy - (up ? 2 : 1), 2, 2, UI_WHITE);
+      gfx->fillRect(fx + 2, fy - (up ? 2 : 1), 2, 2, UI_WHITE);
+    }
   }
 }
 
 void drawBars() {
   drawBar(78, 318, T(S_BAR_FOOD), pet.fullness);
   drawBar(244, 318, T(S_BAR_JOY), pet.joy);
-  drawBar(78, 346, T(S_BAR_ENE), pet.energy);
-  drawBar(244, 346, T(S_BAR_HYG), pet.hygiene);
+  drawBar(78, 340, T(S_BAR_ENE), pet.energy);       // 22 px under the top row, clear of the buttons
+  drawBar(244, 340, T(S_BAR_HYG), pet.hygiene);
 }
 
 void drawBar(int x, int y, const char *label, uint8_t val) {
-  gfx->setTextColor(inkColor());
-  gfx->setTextSize(2);
-  gfx->setCursor(x, y);
-  gfx->print(label);
+  uiTextFit(UIF_TINY, x, y + 12, label, inkColor(), 0, 46);
   int bx = x + 48, bw = 100, bh = 15;  // +48: leaves room for 4-letter labels (EN)
-  uint16_t fill = (val >= 50) ? UI_BAR_OK : (val >= 25) ? UI_BAR_WARN : UI_BAR_BAD;
-  gfx->fillRoundRect(bx, y, bw, bh, 4, UI_TRACK);
+  uint16_t fill = (val >= 50) ? UI_BAR_OK_PALE : (val >= 25) ? UI_BAR_WARN : UI_BAR_BAD;
+  gfx->fillRoundRect(bx, y, bw, bh, 4, UI_TRACK_TEXT);
   int fw = (bw - 4) * val / 100;
   if (fw > 0) gfx->fillRoundRect(bx + 2, y + 2, fw, bh - 4, 3, fill);
 }
@@ -6447,10 +6485,77 @@ const char *eggMsg() {
   }
 }
 
+// Where a creature's head is, for the Zs and hearts that leave it: x is the
+// sprite's centre, y the top of the given action's frame, worked out the way
+// drawPmdActZ() scales it. With no PMD sprite loaded it is a fixed guess.
+void petHeadAnchor(uint8_t actId, int &hx, int &hy) {
+  if (!pmd.loaded) { hx = CX + 30; hy = PET_CY - 40; return; }
+  const PmdAct &a = pmd.has(actId) ? pmd.acts[actId] : pmd.acts[PMD_IDLE];
+  uint8_t s = pmd.acts[PMD_IDLE].h ? 170 / pmd.acts[PMD_IDLE].h : 5;
+  if (s < 2) s = 2;
+  if (s > 5) s = 5;
+  while (s > 2 && a.h * s > 250) s--;
+  uint32_t sc = (uint32_t)s * PET_ZOOM;
+  if (a.h * sc > (uint32_t)PET_MAX_PX * 100) sc = (uint32_t)PET_MAX_PX * 100 / (a.h ? a.h : 1);
+  hx = (int)beh.x;
+  hy = PET_GROUND - (int)((a.base ? a.base : a.h) * sc / 100) + 6;
+}
+
+// Snoring: Zs drift up and to the right from the creature's head, growing as
+// they rise. Three are in flight at once, staggered, so there is always one
+// leaving. Replaces a static "Zz" and the "Zzz..." status line.
+void drawSnore() {
+  uint32_t now = millis();
+  int hx, hy;
+  petHeadAnchor(PMD_SLEEP, hx, hy);
+  const uint32_t PERIOD = 2700;
+  for (int i = 0; i < 3; i++) {
+    float p = ((now + i * (PERIOD / 3)) % PERIOD) / (float)PERIOD;   // 0 at the head, 1 gone
+    int x = hx + (int)(p * 56) + (int)(sinf(p * 9.0f + i) * 5);
+    int y = hy - (int)(p * 78);
+    uint8_t sz = p < 0.34f ? 2 : (p < 0.67f ? 3 : 4);
+    if (p > 0.92f) continue;                                    // gone before the top edge
+    gfx->setTextSize(sz);
+    gfx->setTextColor(INK_K);                                   // 1 px shadow so it reads on any sky
+    gfx->setCursor(x + 1, y + 1);
+    gfx->print("Z");
+    gfx->setTextColor(UI_WHITE);
+    gfx->setCursor(x, y);
+    gfx->print("Z");
+  }
+}
+
+// One heart of half-width 2r centred on x, drawn from two lobes and a point, with
+// a dark rim so it reads on any background and a glint like the bubbles have.
+static void drawHeartShape(int x, int y, int r) {
+  const uint16_t rim = C565(0x5a, 0x10, 0x28), fill = C565(0xff, 0x5c, 0x7c);
+  for (int pass = 0; pass < 2; pass++) {
+    int rr = pass ? r : r + 1;
+    uint16_t c = pass ? fill : rim;
+    gfx->fillCircle(x - r, y, rr, c);
+    gfx->fillCircle(x + r, y, rr, c);
+    gfx->fillTriangle(x - 2 * r - (pass ? 0 : 1), y + r / 3, x + 2 * r + (pass ? 0 : 1), y + r / 3,
+                      x, y + 3 * r + (pass ? 0 : 1), c);
+  }
+  gfx->fillCircle(x - r - r / 3, y - r / 3, r / 4 + 1, UI_WHITE);   // glint
+}
+
+// Affection: one heart floats up from the head, swelling slightly as it rises,
+// over the whole HEART_MS the pet stays "pleased". The same idea as the snoring
+// Zs, so the two read as one family.
+void drawHeartFloat(int hx, int hy) {
+  uint32_t age = HEART_MS - pet.heartLeftMs();           // ms since the heart began
+  if (age >= HEART_MS) return;
+  float p = age / (float)HEART_MS;                       // 0 at the head, 1 gone
+  int x = hx + 10 + (int)(sinf(p * 6.0f) * 7);
+  int y = hy - (int)(p * 66);
+  drawHeartShape(x, y, 3 + (int)(p * 3));
+}
+
 const char *statusMsg() {
   if (pet.evolving()) return T(S_EVOLVING);
   if (bathUntil) return "Splish splash!";  // universal onomatopoeia
-  if (pet.sleeping) return "Zzz...";
+  if (pet.sleeping) return "";   // the Zs above its head say it
   if (pet.eating()) return T(S_EATING);
   if (pet.showHeart()) return T(S_LIKES);
   if (pet.fullness < 25) return T(S_HUNGRY);
