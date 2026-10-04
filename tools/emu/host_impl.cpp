@@ -3,6 +3,7 @@
 #include "Arduino.h"
 #include "sdmon.h"
 #include "rtcbat.h"
+#include "imu.h"
 #include "audio.h"
 #include "linknow.h"
 #include <cstdio>
@@ -130,9 +131,16 @@ bool usbPresent() { return true; }
 void pwrSetup() {}
 bool pwrShortPressed() { return false; }
 
+// --- IMU: no sensor in the emulator; steps arrive through the STEPS console command ---
+bool imuBegin() { return true; }
+bool imuReadAccel(float &, float &, float &) { return false; }
+
 // --- audio (silent) ---
 void audioBegin() {}
 void sfxPlay(uint8_t) {}
+// remembers the last request so tests can see which creature was asked to cry
+int16_t g_emuLastCry = 0; int g_emuCryCount = 0;
+void audioCry(int16_t dex) { g_emuLastCry = dex; g_emuCryCount++; }
 // no radio here; the protocol itself is exercised by tests/link_test.cpp
 struct Link;
 // No radio here at all, which is why lossy_test drives Link directly instead

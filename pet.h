@@ -227,6 +227,17 @@ public:
     save();
   }
 
+  // Owner shown on the ABOUT page, set over serial with NAME. Device-level like
+  // the trainer name, so newEgg() must never clear it. ASCII only (bitmap font).
+  char ownerName[17] = "";
+  void setOwnerName(const char *n) {
+    size_t j = 0;
+    for (size_t i = 0; n[i] && j < sizeof(ownerName) - 1; i++)
+      if ((uint8_t)n[i] >= 0x20 && (uint8_t)n[i] < 0x7F) ownerName[j++] = n[i];
+    ownerName[j] = 0;
+    save();
+  }
+
   // Which generation eggs come from. Player-wide, like the badges: it outlives
   // every creature, so newEgg() must never reset it.
   uint8_t region = REGION_ALL;
@@ -336,6 +347,7 @@ public:
   uint8_t eggCracks() const { return eggTaps; }
   bool eating() const { return millis() < eatUntil; }
   bool showHeart() const { return millis() < heartUntil; }
+  uint32_t heartLeftMs() const { uint32_t n = millis(); return heartUntil > n ? heartUntil - n : 0; }
   bool evolving() const { return millis() < evolveUntil; }
   float evolveT() const {     // progress of the evolution animation 0..1
     uint32_t n = millis();
@@ -436,6 +448,17 @@ public:
   // autosave to notice. Defined out of line: save() is private and declared
   // further down.
   void saveNow();
+
+  // Steps walked today. Player-wide like the streak: newEgg() leaves it alone.
+  // Stored with the day it belongs to rather than cleared by a timer, so it also
+  // resets correctly when the board was off across midnight. The day is today(),
+  // which follows the RTC, so the turn happens within ~30 s of 00:00.
+  uint32_t stepCount = 0;
+  uint32_t stepDay = 0;
+  uint16_t stepsUnsaved = 0;
+  uint32_t stepsToday() const { return stepDay == today() ? stepCount : 0; }
+  void addSteps(uint32_t n);
+  void setStepsToday(uint32_t n);   // debug/console: sets today's total outright
 
 private:
   PetPrefs prefs;

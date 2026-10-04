@@ -23,11 +23,13 @@ const SaveField SAVE_FIELDS[] = {
   { "bk", SK_BOOL },    { "shy", SK_BOOL },   { "eshy", SK_BOOL },
   { "stpk", SK_BOOL },  { "evop", SK_U8 },    { "slpa", SK_U8 },    { "rtpn", SK_BOOL },
   // the player: outlives every creature, which is exactly why it must be here
-  { "tnam", SK_STR },   { "avtr", SK_U8 },    { "badg", SK_U16 },
+  { "tnam", SK_STR },   { "onam", SK_STR },
+     { "avtr", SK_U8 },    { "badg", SK_U16 },
   { "reg", SK_U8 },     { "eggR", SK_BYTES },
   { "badgX", SK_BYTES },{ "badhX", SK_BYTES },
   { "badh", SK_U16 },   { "dexreg", SK_BYTES }, { "dexsh", SK_BYTES },
   { "strk", SK_U16 },   { "bstrk", SK_U16 },  { "cday", SK_U32 },
+  { "stps", SK_U32 },   { "sday", SK_U32 },
   { "medal", SK_U16 },  { "tmedal", SK_U16 }, { "mstone", SK_U16 },
   { "ghi", SK_U16 },    { "shi", SK_U16 },    { "qhi", SK_U16 },
   // the banked creatures

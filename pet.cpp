@@ -1,4 +1,5 @@
 #include "pet.h"
+#include "steps.h"
 #include "avatars.h"
 #include "dex.h"
 #include "moves.h"
@@ -515,6 +516,32 @@ void Pet::registerSpecies(int16_t dex) {
 int Pet::careBonus() const {
   int s = streak > 30 ? 30 : streak;
   return s / 3 + bond / 25;
+}
+
+// Every caller asks the day here, so a step is never added to yesterday's total.
+// Saving is throttled: the flush runs only while the screen is dim or off, so
+// marking it pending often is free, but it should not be every footfall.
+void Pet::addSteps(uint32_t n) {
+  if (!n) return;
+  uint32_t d = today();
+  if (d != stepDay) {
+    stepDay = d;
+    stepCount = 0;
+    pendingSave = true;
+  }
+  stepCount += n;
+  if (stepCount > STEP_MAX) stepCount = STEP_MAX;
+  stepsUnsaved += n;
+  if (stepsUnsaved >= 20) {
+    stepsUnsaved = 0;
+    pendingSave = true;
+  }
+}
+
+void Pet::setStepsToday(uint32_t n) {
+  stepDay = today();
+  stepCount = n > STEP_MAX ? STEP_MAX : n;
+  stepsUnsaved = 0;
 }
 
 // first care of the day: advances the streak and strengthens the bond
@@ -1272,6 +1299,7 @@ void Pet::save() {
   prefs.putBytes("badhX", badgesHardX, sizeof(badgesHardX));
   prefs.putBytes("eggR", eggByRegion, sizeof(eggByRegion));
   prefs.putString("tnam", trainerName);
+  prefs.putString("onam", ownerName);
   prefs.putBool("froz", frozen);
   prefs.putUShort("badg", badges);
   prefs.putUShort("badh", badgesHard);
@@ -1295,6 +1323,8 @@ void Pet::save() {
   prefs.putUShort("strk", streak);
   prefs.putUShort("bstrk", bestStreak);
   prefs.putUInt("cday", lastCareDay);
+  prefs.putUInt("stps", stepCount);
+  prefs.putUInt("sday", stepDay);
   prefs.putUChar("bond", bond);
   prefs.putUShort("medal", medals);
   prefs.putUShort("tmedal", totalMedals);
@@ -1361,6 +1391,8 @@ void Pet::load() {
   streak = prefs.getUShort("strk", 0);
   bestStreak = prefs.getUShort("bstrk", 0);
   lastCareDay = prefs.getUInt("cday", 0);
+  stepCount = prefs.getUInt("stps", 0);
+  stepDay = prefs.getUInt("sday", 0);
   bond = prefs.getUChar("bond", 0);
   medals = prefs.getUShort("medal", 0);
   totalMedals = prefs.getUShort("tmedal", 0);
@@ -1389,6 +1421,7 @@ void Pet::load() {
   // array at its zeroed initialiser, which is exactly "nothing remembered".
   loadBlob(prefs, "eggR", eggByRegion, sizeof(eggByRegion));
   prefs.getString("tnam", trainerName, sizeof(trainerName));
+  prefs.getString("onam", ownerName, sizeof(ownerName));
   if (avatar >= AVATAR_COUNT) avatar = 0;   // a save from when there were four
   badges = prefs.getUShort("badg", 0);
   badgesHard = prefs.getUShort("badh", 0);

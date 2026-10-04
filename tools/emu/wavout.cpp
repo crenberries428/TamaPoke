@@ -11,8 +11,10 @@
 // speaker should be what comes out of this file.
 #include "../../gbsynth.h"
 #include "../../music.h"
+#include "../../cry.h"
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -81,6 +83,17 @@ int wavMain(const char *path, const char *demo) {
       syn.note(0, gbNote(mel[i]), 1, 13, -1, 6, 260);
       syn.note(1, gbNote(bass[i] - 12), 2, 9, 0, 0, 260);
       run(syn, out, 270);
+    }
+  } else if (d.rfind("cry", 0) == 0) {
+    // `--demo cry` plays a tour of Kanto; `--demo cry25` plays that one species
+    int only = d.size() > 3 ? atoi(d.c_str() + 3) : 0;
+    for (int dex = only ? only : 1; dex <= (only ? only : 151); dex += (only ? 1 : 6)) {
+      CryPlayer p;
+      if (!p.begin(dex)) continue;
+      uint32_t ms;
+      while ((ms = p.step(syn)) != 0) run(syn, out, ms);
+      run(syn, out, 400);
+      printf("dex %d: %u ms\n", dex, CryPlayer::lengthMs(dex));
     }
   } else if (d == "gym" || d == "trainer" || d == "wild" || d == "win") {
     // A REAL battle theme, both pulse channels, exactly as the data says.

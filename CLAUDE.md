@@ -8,7 +8,7 @@ Personal, non-commercial fan project. Code MIT; sprites CC BY-NC (PMD SpriteColl
 
 | Path | What |
 |---|---|
-| `TamaPoke.ino` | Main sketch (~2.3k LOC): UI, screens, touch, serial console, `FW_VERSION` |
+| `TamaPoke.ino` | Main sketch (~6.5k LOC): UI, screens, touch, serial console, `FW_VERSION` |
 | `pet.cpp/.h` | Game state machine: stats, tick, evolution, eggs, save/load, balance constants |
 | `species.h` / `dex.h` | The 151: names, typings, evolution chains, base stats, rarity tiers, favourite berry |
 | `types.h` | Type-effectiveness helpers over the generated 18x18 chart in `dex.h` |
@@ -60,7 +60,7 @@ entry in one language shifts every string after it in that language.
 numbers)" documents exact drain rates, spawn odds and thresholds straight from the
 code. It is the project's spec, not decoration — changing a constant in `pet.h`/
 `pet.cpp` without updating that table makes the docs lie. Bump `FW_VERSION` in
-`TamaPoke.ino:27` and the firmware badge at the top of the README in the same commit.
+`TamaPoke.ino:40` and the firmware badge at the top of the README in the same commit.
 
 **Comments and commit messages are in English** — as of v1.5. Most of the existing
 source is commented in unaccented Spanish (the original author's convention) and is
@@ -269,6 +269,7 @@ On hardware, verify over the serial console (115200):
   asserts the crumb names the screen actually on the panel, since a report that
   points at the wrong screen is worse than none.
 - `SPEC <dex>` `LVL <n>` `IV <a> <d> <s> <h>` `HATCH` `SHINY` `EGGS` (20 eggs) `GAL`
+- `POOP [n]` leave n piles (default 1, max 3) to check how they draw
 - `MISS <n>` set the care mistakes (`miss=` on STATS); each one delays every
   evolution by a level, so `MISS 0` forgives a neglected start
 - `TR <atk> <def> <spe>` set the training (this game's EVs); clamped to
@@ -1301,7 +1302,7 @@ punching bag, SPE via the ball game, DEF passively (+1 per `DEF_TRAIN_TICKS` = 6
 min of good wellbeing).
 
 ~~Open question: DEF has no active trainer~~ **settled** -- kept passive and
-styled for it. `renderTrain()` draws the DEF row flat in `UI_TRACK` and the tap
+styled for it. `renderTrain()` draws the DEF row flat in `UI_TRACK_TEXT` and the tap
 handler skips it (`passive = (i == 2)`), so it reads as information rather than
 a dead button. DEF still trains by itself, +1 per `DEF_TRAIN_TICKS` of good
 wellbeing.
@@ -1319,7 +1320,8 @@ fact so nobody redesigns it from the old notes.
 | Left | the gym ladder -- which is also where the LAN battle button lives |
 | Right | the party |
 
-The clock lost its gesture on purpose: the menu's SETTINGS row already opens it,
+The clock lost its gesture on purpose: the menu's SETTINGS row already opens it
+(five swipeable pages: time, volume 0-100 slider, brightness 1-10, language, about),
 and the player card is reached far more often. The Pokedex lost its horizontal
 gesture for the same reason -- it has a menu row, and a gesture is worth more
 spent on a screen without one.

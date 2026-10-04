@@ -1,5 +1,6 @@
 #include "audio.h"
 #include "gbsynth.h"
+#include "cry.h"
 #include "music.h"
 #include "pin_config.h"
 #include <Arduino.h>
@@ -22,6 +23,7 @@ static I2SClass i2s;
 static bool gReady = false;
 static bool gOn = true;
 static QueueHandle_t gQ = nullptr;
+static QueueHandle_t gCryQ = nullptr;   // dex numbers; a cry needs 16 bits, an effect id does not
 
 // ---- codec I2C ----
 static bool esW(uint8_t reg, uint8_t val) {
@@ -192,6 +194,22 @@ static void audioTask(void *) {
     bool wantAudio = (m != MUS_NONE) || gSyn.busy();
     if (!gOn || !gReady) { gSyn.allOff(); m = MUS_NONE; wantAudio = false; }
 
+    // A cry is played like an effect: it takes all three voices until it ends.
+    int16_t cryDex;
+    if (xQueueReceive(gCryQ, &cryDex, 0) == pdTRUE) {
+      CryPlayer cp;
+      if (gOn && gReady && cp.begin(cryDex)) {
+        if (!ampOn) { digitalWrite(PA, HIGH); delay(6); ampOn = true; }
+        gSyn.allOff();
+        uint32_t ms;
+        while ((ms = cp.step(gSyn)) != 0) pump(ms);
+        pump(60);                        // let the last note's tail ring out
+        // the music clock does not know time passed, so restart the tune cleanly
+        playing = MUS_NONE;
+      }
+      continue;
+    }
+
     // An effect always wins the melody voice. With three voices a cue that
     // mixed politely underneath would just be mud; cutting through is both
     // simpler and the right priority.
@@ -290,12 +308,17 @@ void audioBegin() {
 
   gReady = true;
   gQ = xQueueCreate(8, sizeof(uint8_t));
+  gCryQ = xQueueCreate(2, sizeof(int16_t));
   xTaskCreatePinnedToCore(audioTask, "audio", 4096, nullptr, 1, nullptr, 0);
   sfxPlay(SFX_HATCH);  // boot jingle (confirms it sounds)
 }
 
 void sfxPlay(uint8_t id) {
   if (gReady && gOn && gQ) xQueueSend(gQ, &id, 0);  // dropped if the queue is full
+}
+
+void audioCry(int16_t dex) {
+  if (gReady && gOn && gCryQ && cryHas(dex)) xQueueSend(gCryQ, &dex, 0);
 }
 
 void audioSetEnabled(bool on) {

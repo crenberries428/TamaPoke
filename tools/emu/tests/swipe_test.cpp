@@ -70,21 +70,45 @@ int main(){
     m.ivAtk=m.ivDef=m.ivSpe=m.ivHp=20; party.box[i]=m; }
 
   clearAll(); cardOpen=true;                      check("card",     &cardOpen,     &cardPage);
+  {
+    // The card pages are circular, both ways. The page count is DISCOVERED (steps
+    // until a left swipe lands back on 0) rather than restated, and a clamped
+    // implementation never returns, which is what makes this able to fail.
+    clearAll(); cardOpen=true; cardPage=0;
+    int steps=0; uint8_t last=0;
+    do { last=cardPage; onSwipe(-1); steps++; } while (cardPage!=0 && steps<16);
+    if (cardPage!=0 || steps<2 || !cardOpen) { printf("FAIL  card       left swipes never looped back to page 0 (page=%u after %d)\n", cardPage, steps); bad++; }
+    else printf("PASS  card       left swipe wraps from the last of %d pages to the first\n", steps);
+    cardPage=0; onSwipe(1);
+    if (cardPage!=last || !cardOpen) { printf("FAIL  card       right swipe on page 0 did not wrap to the last page (page=%u want %u)\n", cardPage, last); bad++; }
+    else printf("PASS  card       right swipe wraps from the first page to the last\n");
+  }
   clearAll(); gymOpen=true; gymPick=false;        check("gyms",     &gymOpen,      &gymPage);
   clearAll(); playerOpen=true;                    check("player",   &playerOpen,   &playerPage);
+  {
+    // the trainer pages loop both ways and a swipe never closes the screen
+    clearAll(); playerOpen=true; playerPage=0;
+    int steps=0; uint8_t last=0;
+    do { last=playerPage; onSwipe(-1); steps++; } while (playerPage!=0 && steps<16);
+    if (playerPage!=0 || steps<2 || !playerOpen) { printf("FAIL  player     left swipes never looped back to page 0 (page=%u after %d, open=%d)\n", playerPage, steps, playerOpen); bad++; }
+    else printf("PASS  player     left swipe wraps from the last of %d pages to the first\n", steps);
+    playerPage=0; onSwipe(1);
+    if (!playerOpen || playerPage!=last) { printf("FAIL  player     right swipe on page 0 left the screen or did not wrap (open=%d page=%u want %u)\n", playerOpen, playerPage, last); bad++; }
+    else printf("PASS  player     right swipe on the first page wraps to the last, screen stays open\n");
+  }
   clearAll(); partyOpen=true; boxOpen=true;       check("box",      &boxOpen,      &boxPage);
   clearAll(); clockOpen=true;                     check("settings", &clockOpen,    &settingsPage);
   {
-    // pages are clamped, not wrapped: swiping on past the last page stays on it
-    // and swiping back returns to the first, and the screen never closes
+    // settings pages are circular, like the card and trainer pages, and the
+    // screen never closes on a swipe. The page count is discovered, not restated.
     clearAll(); clockOpen=true; settingsPage=0;
-    int n=1;
-    for (int i=0;i<12;i++){ uint8_t b=settingsPage; onSwipe(-1); if (settingsPage!=b) n=settingsPage+1; }
-    if (!clockOpen || n<4) { printf("FAIL  settings   walked %d pages (open=%d), want >= 4\n", n, clockOpen); bad++; }
-    else printf("PASS  settings   walks %d pages and clamps at the end\n", n);
-    for (int i=0;i<12;i++) onSwipe(1);
-    if (!clockOpen || settingsPage!=0) { printf("FAIL  settings   swipe back did not clamp at page 0 (%u)\n", settingsPage); bad++; }
-    else printf("PASS  settings   swipe back clamps at page 0\n");
+    int steps=0; uint8_t last=0;
+    do { last=settingsPage; onSwipe(-1); steps++; } while (settingsPage!=0 && steps<16);
+    if (!clockOpen || settingsPage!=0 || steps<4) { printf("FAIL  settings   left swipes never looped back to page 0 (page=%u after %d, open=%d)\n", settingsPage, steps, clockOpen); bad++; }
+    else printf("PASS  settings   left swipe wraps from the last of %d pages to the first\n", steps);
+    settingsPage=0; onSwipe(1);
+    if (!clockOpen || settingsPage!=last) { printf("FAIL  settings   right swipe on the first page did not wrap to the last (page=%u want %u, open=%d)\n", settingsPage, last, clockOpen); bad++; }
+    else printf("PASS  settings   right swipe on the first page wraps to the last\n");
   }
   clearAll(); movePickOpen=true; movePickParty=0; movePickSlot=0;
                                                   check("movepick", &movePickOpen, &movePickPage);
