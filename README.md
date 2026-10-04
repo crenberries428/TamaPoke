@@ -66,6 +66,16 @@ toward 10,000 and turns gold when you get there. The count resets at midnight by
 the RTC. It is a counter only: it changes nothing in the game. The threshold is
 tuned against synthetic gait in `steps_test`, not yet against a person walking.
 
+### Day, dusk, night
+
+| Day | Sunset | Night | Steps |
+|---|---|---|---|
+| <img src="docs/screens/sky_day.png" width="180"> | <img src="docs/screens/sky_sunset.png" width="180"> | <img src="docs/screens/sky_night.png" width="180"> | <img src="docs/screens/steps.png" width="180"> |
+
+The sky follows the clock: a haloed sun and drifting clouds by day, a crescent
+moon and twinkling stars at night. The last shot shows the step plate on the left
+edge. The boot title card is `docs/screens/splash.png`.
+
 ### Battling
 
 | The fight | Choosing a team | Winning |
