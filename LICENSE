@@ -1,6 +1,8 @@
 MIT License
 
-Copyright (c) 2026 Quique Tortosa
+Copyright (c) 2026 Cheng Ren
+Copyright (c) 2026 Quique Tortosa (original TamaPoke,
+  https://github.com/socquique/TamaPoke)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,6 +21,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+PROVENANCE — this repository is a fork of socquique/TamaPoke by Quique Tortosa,
+which started the project (firmware, sprite pipeline, UI, web installer). It also
+incorporates code from the fork https://github.com/DylanPDao/TamaPoke by Dylan
+Dao. Both are MIT licensed; their notices are kept here as the license requires.
 
 ---
 
