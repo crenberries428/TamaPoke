@@ -269,6 +269,8 @@ On hardware, verify over the serial console (115200):
   asserts the crumb names the screen actually on the panel, since a report that
   points at the wrong screen is worse than none.
 - `SPEC <dex>` `LVL <n>` `IV <a> <d> <s> <h>` `HATCH` `SHINY` `EGGS` (20 eggs) `GAL`
+- `BIOME <0-6>` force a scenery biome (meadow beach forest volcano mountain snow
+  graveyard); not saved, cleared by a reboot
 - `POOP [n]` leave n piles (default 1, max 3) to check how they draw
 - `MISS <n>` set the care mistakes (`miss=` on STATS); each one delays every
   evolution by a level, so `MISS 0` forgives a neglected start
