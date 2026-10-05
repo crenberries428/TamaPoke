@@ -3117,16 +3117,16 @@ void renderClock() {
     }
   } else {
     settingsTitle(T(S_ABOUT));
-    drawLogo(233);
+    drawLogo(217);
     if (pet.ownerName[0]) {
       char own[24];
       snprintf(own, sizeof(own), "%s's", pet.ownerName);
       // just above the logo
-      uiTextFit(UIF_BIG, CX, 233 - LOGO_H / 2 - 24 - 10 + 21, own, UI_INK, 1, 300);
+      uiTextFit(UIF_BIG, CX, 217 - LOGO_H / 2 - 24 - 10 + 21, own, UI_INK, 1, 300);
     }
     char ver[16];
     snprintf(ver, sizeof(ver), "v%s", FW_VERSION);
-    uiText(UIF_BIG, CX, 306, ver, UI_INK, 1);
+    uiText(UIF_BIG, CX, 290, ver, UI_INK, 1);
   }
 
   // page dots, like the player card's
