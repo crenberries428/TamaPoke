@@ -4113,10 +4113,9 @@ static void btlHpBar(int x, int y, int w, const Combatant &c, uint16_t shown) {
 static void btlSide(int tx, int ty, int sx, int sy, const Combatant &c, uint8_t who) {
   // the scenes are busy, so the name and bar sit on their own plate rather
   // than fighting the artwork for contrast
-  // Plate is 190 wide; rows: name+level, HP bar, then numbers/status (your
-  // plate always, the foe's only when it has a status).
-  bool row3 = (who == 0) || (c.ailment != AIL_NONE);
-  int ph = row3 ? 68 : 50;
+  // Plate is 190 wide; rows: name+level, HP bar, then numbers/status (both
+  // sides show numeric HP).
+  int ph = 68;
   gfx->fillRoundRect(tx - 8, ty - 8, 190, ph, 8, UI_BG_DAY);
   gfx->drawRoundRect(tx - 8, ty - 8, 190, ph, 8, UI_INK);
   char l[28];
@@ -4124,11 +4123,9 @@ static void btlSide(int tx, int ty, int sx, int sy, const Combatant &c, uint8_t 
   uiTextFit(UIF_TINY, tx, ty + 12, l, UI_INK, 0, 174);
   uiText(UIF_TINY, tx, ty + 32, "HP", UI_BAR_WARN, 0);
   btlHpBar(tx + 26, ty + 20, 148, c, btlHpShown[who]);
-  if (who == 0) {                 // your own numbers, as the games do
-    char hp[16];
-    snprintf(hp, sizeof(hp), "%u/%u", btlHpShown[who], c.maxHp);
-    uiText(UIF_TINY, tx + 174, ty + 52, hp, UI_INK, 2);
-  }
+  char hp[16];
+  snprintf(hp, sizeof(hp), "%u/%u", btlHpShown[who], c.maxHp);
+  uiText(UIF_TINY, tx + 174, ty + 52, hp, UI_INK, 2);
   if (c.ailment != AIL_NONE) {   // a status is the thing you most need to see
     static const StrId AIL_STR[] = { S_AIL_PARA, S_AIL_PARA, S_AIL_BURN, S_AIL_POISON,
                                      S_AIL_SLEEP, S_AIL_FREEZE, S_AIL_CONFUSE };
@@ -4266,7 +4263,7 @@ void renderBattle() {
 
   // x=82 not 58: at y=60 the round bezel starts around x=77, and a longer
   // name like BLASTOISE was losing its first characters off the edge
-  btlSide(82, 82, 300, 40, btlFoe, 1);    // foe reads top-left, sprite top-right
+  btlSide(82, 82, 300, 62, btlFoe, 1);    // foe reads top-left, sprite top-right
   btlSide(250, 190, 76, 168, btlYou, 0);  // you read bottom-right, sprite bottom-left
 
   // Waiting on the other device. Without this the screen is identical to the
