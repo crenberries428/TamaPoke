@@ -702,6 +702,18 @@ off the step counter at the far left and below the sun and moon.
 | Snow | ice | polar ice: faceted icebergs, an open lead, ridges and cracks, heavy slanted snowfall; at night a swaying aurora of green, cyan and violet rays | Piplup (Seel without the Sinnoh pack) |
 | Graveyard | ghost | haunted house with flickering windows, gnarled trees, iron fence, seven gravestones, scattered bones, drifting fog, will-o'-wisps, bats at night | Gastly / Haunter |
 
+Day on the top row, night underneath (regenerate with `bash tools/make_screens.sh`):
+
+| Meadow | Beach | Forest | Volcano |
+|---|---|---|---|
+| <img src="docs/screens/biome_meadow_day.png" width="180"> | <img src="docs/screens/biome_beach_day.png" width="180"> | <img src="docs/screens/biome_forest_day.png" width="180"> | <img src="docs/screens/biome_volcano_day.png" width="180"> |
+| <img src="docs/screens/biome_meadow_night.png" width="180"> | <img src="docs/screens/biome_beach_night.png" width="180"> | <img src="docs/screens/biome_forest_night.png" width="180"> | <img src="docs/screens/biome_volcano_night.png" width="180"> |
+
+| Mountain | Snow | Graveyard |
+|---|---|---|
+| <img src="docs/screens/biome_mountain_day.png" width="180"> | <img src="docs/screens/biome_snow_day.png" width="180"> | <img src="docs/screens/biome_graveyard_day.png" width="180"> |
+| <img src="docs/screens/biome_mountain_night.png" width="180"> | <img src="docs/screens/biome_snow_night.png" width="180"> | <img src="docs/screens/biome_graveyard_night.png" width="180"> |
+
 The residents are real PMD sprites, kept small and behind the pet. Each is loaded
 only while its biome is on screen (about 110-180 KB of PSRAM) and freed when the
 biome changes; a species whose pack is not on the card simply does not appear.

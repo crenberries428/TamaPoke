@@ -18,9 +18,17 @@ mkdir -p "$OUT"
 # Keep this list in step with the tables in README.md § Screens.
 SHOTS="main region starter starterj btlmenu btlmoves gympick gymsj dexpick gallery gallery2 player player2 box egg lanready pick moves win"
 
-# name:screen:extra flags -- shots that need a clock hour, a language or a step count
+# name:screen:extra flags -- shots that need a clock hour, a language, a step count or a
+# particular species (the biome shots: one species per biome, by day and by night)
 EXTRA="set_time:clock0: set_volume:clock1: set_bright:clock2: set_lang:clock3: set_lang_zh:clock3:--lang_zh
-sky_day:main:--hour_12 sky_night:main:--hour_23 sky_sunset:main:--hour_19 steps:main:--steps_6240 splash:splash:"
+sky_day:main:--hour_12 sky_night:main:--hour_23 sky_sunset:main:--hour_19 steps:main:--steps_6240 splash:splash:
+biome_meadow_day:main:--dex_25_--hour_12 biome_meadow_night:main:--dex_25_--hour_23
+biome_beach_day:main:--dex_7_--hour_12 biome_beach_night:main:--dex_7_--hour_23
+biome_forest_day:main:--dex_1_--hour_12 biome_forest_night:main:--dex_1_--hour_23
+biome_volcano_day:main:--dex_4_--hour_12 biome_volcano_night:main:--dex_4_--hour_23
+biome_mountain_day:main:--dex_74_--hour_12 biome_mountain_night:main:--dex_74_--hour_23
+biome_snow_day:main:--dex_124_--hour_12 biome_snow_night:main:--dex_124_--hour_23
+biome_graveyard_day:main:--dex_92_--hour_12 biome_graveyard_night:main:--dex_92_--hour_23"
 
 echo "Building the emulator..."
 bash tools/emu/build.sh >/dev/null
