@@ -235,7 +235,7 @@ static int shotMode(const char *screen, const char *out, int lvl, int iv, int de
   // It started firing for every shot once dex_moves.py gained the cheap early
   // attacks, because a creature now genuinely has moves waiting.
   while (pet.hasLearnOffer()) pet.declineLearn();
-  if (g_shotSteps >= 0 || g_shotHour >= 0 || !strcmp(screen, "main")) {  // let the medal toast expire: it would cover the plate
+  if (g_shotSteps >= 0 || g_shotHour >= 0 || !strcmp(screen, "main") || !strncmp(screen, "eat", 3)) {  // let the medal toast expire: it would cover the plate
     emuSetTimeScale(5000);
     uint32_t t0 = millis();
     while (millis() - t0 < 4000) {}
@@ -280,6 +280,11 @@ static int shotMode(const char *screen, const char *out, int lvl, int iv, int de
     btlFoe.hp = btlFoe.maxHp / 3;      // bar mid-drain
     btlLungeUntil[0] = millis() + 130; // you mid-lunge
     btlHitUntil[1] = millis() + 300;   // foe flinching
+  }
+  else if (!strncmp(screen, "eat", 3) && screen[3] >= '0' && screen[3] <= '3') {   // eatN_MS: item N, MS in
+    onTap(134, 393);                              // open the picker...
+    onTap(101 + (screen[3] - '0') * 66 + 30, 320);                           // ...and pick the item
+    usleep((screen[4] == '_' ? atoi(screen + 5) : 0) * 1000);
   }
   else if (!strcmp(screen, "sleep")) { pet.sleeping = true; }
   else if (!strcmp(screen, "heart")) { pet.caress(); usleep(650000); }   // mid-float

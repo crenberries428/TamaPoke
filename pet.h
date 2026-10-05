@@ -346,6 +346,7 @@ public:
   bool isEgg() const { return speciesId < 0; }
   uint8_t eggCracks() const { return eggTaps; }
   bool eating() const { return millis() < eatUntil; }
+  uint32_t eatLeftMs() const { uint32_t n = millis(); return eatUntil > n ? eatUntil - n : 0; }
   bool showHeart() const { return millis() < heartUntil; }
   uint32_t heartLeftMs() const { uint32_t n = millis(); return heartUntil > n ? heartUntil - n : 0; }
   bool evolving() const { return millis() < evolveUntil; }
