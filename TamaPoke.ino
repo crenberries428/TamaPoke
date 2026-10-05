@@ -2084,7 +2084,7 @@ void onTap(int16_t x, int16_t y) {
 
 // ---------- render ----------
 
-bool gNight = false;  // real night (by hour) or asleep: set by render()
+bool gNight = false;  // real night, by the RTC hour: set by render(). Sleeping does NOT make it night.
 
 // The species accent is picked to read on the dark night sky; on the pale
 // morning / afternoon / sunset skies a yellow or light-blue name all but vanishes.
@@ -2478,7 +2478,7 @@ void render() {
     return;
   }
   int h = sceneHour();
-  gNight = pet.sleeping || h < 6 || h >= 20;
+  gNight = h < 6 || h >= 20;   // by the clock only: a creature asleep at noon sleeps in daylight
   // drawScene covers the full 466x466: no fillScreen(BLACK) beforehand so
   // that an overlapping DMA flush never captures half-painted black (anti-flicker)
   drawScene(pet.isEgg() ? 0 : DEX_TBL[pet.speciesId].biome, millis(), gNight);
