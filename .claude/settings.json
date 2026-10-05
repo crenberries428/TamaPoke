@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(arduino-cli compile:*)",
+      "Bash(arduino-cli upload:*)",
       "Bash(arduino-cli board list:*)",
       "Bash(arduino-cli lib list:*)",
       "Bash(bash tools/build_web.sh)",
@@ -19,7 +20,6 @@
       "Bash(ls:*)"
     ],
     "ask": [
-      "Bash(arduino-cli upload:*)",
       "Bash(python3 tools/send_sd.py:*)",
       "Bash(python3 tools/pack_pmd.py:*)"
     ]
