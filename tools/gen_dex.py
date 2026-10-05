@@ -17,23 +17,26 @@ def rgb565(hexcol):
     return (r >> 3) << 11 | (g >> 2) << 5 | (b >> 3)
 
 
-# background biome by type (the light comes from the real RTC time)
-# 0 PRADERA, 1 PLAYA, 2 BOSQUE, 3 VOLCAN, 4 MONTANA, 5 NIEVE
+# Background biome by type (the light comes from the real RTC time). These values
+# are stored in DexEntry::biome and mirrored by `enum Biome` in TamaPoke.ino:
+# append new ones, never reorder.
+MEADOW, BEACH, FOREST, VOLCANO, MOUNTAIN, SNOW, GRAVEYARD = range(7)
+
 TYPE_BIOME = {
-    'agua': 1, 'planta': 2, 'bicho': 2, 'fuego': 3,
-    'roca': 4, 'tierra': 4, 'dragon': 1, 'hielo': 5,  # gen 1 dragons (Dratini) live in the water
-    'normal': 0, 'electrico': 0, 'lucha': 0, 'veneno': 0,
-    'psiquico': 0, 'fantasma': 0,
+    'agua': BEACH, 'planta': FOREST, 'bicho': FOREST, 'fuego': VOLCANO,
+    'roca': MOUNTAIN, 'tierra': MOUNTAIN, 'dragon': BEACH, 'hielo': SNOW,  # gen 1 dragons (Dratini) live in the water
+    'normal': MEADOW, 'electrico': MEADOW, 'lucha': MEADOW, 'veneno': MEADOW,
+    'psiquico': MEADOW, 'fantasma': GRAVEYARD,   # ghosts live in the graveyard
     # Gen 2/3 brought types no Gen 1 species had as a primary. Steel goes to the
     # mountain (Steelix, Aron, Registeel are all cave/rock creatures), Dark to
     # the forest (Umbreon, Houndour, Poochyena), Fairy to the meadow, and Flying
     # to the meadow as well -- nothing in 1-386 is primarily Flying, but the map
     # must be total or gen_dex.py raises on the first species that is.
-    'acero': 4, 'siniestro': 2, 'hada': 0, 'volador': 0,
+    'acero': MOUNTAIN, 'siniestro': FOREST, 'hada': MEADOW, 'volador': MEADOW,
 }
 
 # exceptions by dex# (the type is not enough): marine rock/water fossils -> beach
-BIOME_OVERRIDE = {138: 1, 139: 1, 140: 1, 141: 1}  # Omanyte, Omastar, Kabuto, Kabutops
+BIOME_OVERRIDE = {138: BEACH, 139: BEACH, 140: BEACH, 141: BEACH}  # Omanyte, Omastar, Kabuto, Kabutops
 
 
 def main():
@@ -86,7 +89,7 @@ def main():
         "  uint8_t bHp, bAtk, bDef, bSpe;  // current base stats (PokeAPI), not the gen 1 ones\n"
         "  uint8_t bSpA, bSpD;   // special attack/defence: the physical-special split\n"
         "                        // lives in the species, the individual only rolls 4 IVs\n"
-        "  uint8_t biome;        // 0 meadow 1 beach 2 forest 3 volcano 4 mountain 5 snow\n"
+        "  uint8_t biome;        // 0 meadow 1 beach 2 forest 3 volcano 4 mountain 5 snow 6 graveyard\n"
         "  uint8_t type1, type2;  // current typing; type2 = T_NONE if single-typed\n"
         "};\n\n")
     # base forms = those that are nobody's evolution (Eevee's branches are)
