@@ -3680,12 +3680,19 @@ void drawScene(uint8_t biome, uint32_t now, bool night) {
 }
 
 // first game: pick a starter among Bulbasaur / Charmander / Squirtle
+const UiFont &uiFitAll(const UiFont &f, const char *const *s, const int *maxW, int n);   // defined with uiTextFit
+
 void renderStarterSelect() {
   gfx->fillScreen(RGB565_BLACK);
   gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
   const char *t = T(S_CHOOSE_STARTER);
   uiTextFit(UIF_SMALL, CX, 82, t, UI_INK, 1, 300);
-  for (int i = 0; i < starterCountShown(pet.region); i++) {
+  // the three names share one size: the longest one decides it
+  const char *nm[3]; int nw[3]; int nn = starterCountShown(pet.region);
+  if (nn > 3) nn = 3;
+  for (int i = 0; i < nn; i++) { nm[i] = DEX_TBL[starterOf(pet.region, i)].name; nw[i] = 208; }
+  const UiFont &nameFont = uiFitAll(UIF_BIG, nm, nw, nn);
+  for (int i = 0; i < nn; i++) {
     int16_t d = starterOf(pet.region, i);
     const DexEntry &de = DEX_TBL[d];
     int ry = STARTER_ROW_Y + i * (STARTER_ROW_H + STARTER_ROW_GAP);
@@ -3693,7 +3700,7 @@ void renderStarterSelect() {
     gfx->drawRoundRect(70, ry, 326, STARTER_ROW_H, 14, de.accent);
     const uint8_t *th = thumbs.get(d);     // starter thumbnail (if the SD is ready)
     if (th) drawThumb(th, 76, ry - 5, 3, false);
-    uiTextFit(UIF_BIG, 178, ry + 45, de.name, UI_INK, 0, 208);
+    uiText(nameFont, 178, ry + 45, de.name, UI_INK, 0);
   }
   gfx->flush();
 }
@@ -4481,6 +4488,9 @@ void renderClock() {
     drawSlider(gBright, 1, 10);
   } else if (settingsPage == SET_LANG) {
     settingsTitle(T(S_SET_LANG));
+    const char *ln[LANG_COUNT]; int lwid[LANG_COUNT];
+    for (int i = 0; i < LANG_COUNT; i++) { ln[i] = LANG_NAMES[LANG_ORDER[i]]; lwid[i] = LANG_CELL_W - 12; }
+    const UiFont &langFont = uiFitAll(UIF_SMALL, ln, lwid, LANG_COUNT);   // every language name at one size
     for (int i = 0; i < LANG_COUNT; i++) {
       int x, y;
       langCell(i, x, y);
@@ -4488,8 +4498,7 @@ void renderClock() {
       bool on = (lg == gLang);
       gfx->fillRoundRect(x, y, LANG_CELL_W, LANG_CELL_H, 12, on ? UI_BAR_OK : UI_WHITE);
       gfx->drawRoundRect(x, y, LANG_CELL_W, LANG_CELL_H, 12, UI_INK);
-      uiTextFit(UIF_SMALL, x + LANG_CELL_W / 2, y + LANG_CELL_H / 2 + 7, LANG_NAMES[lg],
-                on ? UI_BG_DAY : UI_INK, 1, LANG_CELL_W - 12);
+      uiText(langFont, x + LANG_CELL_W / 2, y + LANG_CELL_H / 2 + 7, LANG_NAMES[lg], on ? UI_BG_DAY : UI_INK, 1);
     }
   } else {
     settingsTitle(T(S_ABOUT));
@@ -4826,6 +4835,20 @@ int uiTextFit(const UiFont &f, int x, int y, const char *s, uint16_t color, int 
   if (uiTextWidth(*use, s) > maxW) use = &UIF_TINY;
   uiText(*use, x, y, s, color, align);
   return uiTextWidth(*use, s);
+}
+
+// The largest of f / UIF_SMALL / UIF_TINY at which EVERY one of n strings fits its
+// own width. Options in one menu must share a size: uiTextFit() shrinks each string
+// on its own, so a single long name used to render smaller than its neighbours.
+const UiFont &uiFitAll(const UiFont &f, const char *const *s, const int *maxW, int n) {
+  const UiFont *c[3] = { &f, &UIF_SMALL, &UIF_TINY };
+  for (int k = 0; k < 3; k++) {
+    bool ok = true;
+    for (int i = 0; i < n && ok; i++)
+      if (uiTextWidth(*c[k], s[i]) > maxW[i]) ok = false;
+    if (ok) return *c[k];
+  }
+  return UIF_TINY;
 }
 
 // page 1: combat (4 bars + train button)
@@ -5690,6 +5713,11 @@ void renderBattle() {
   } else if (btlMenu == 2) {
     drawBtlBack();
     // who to bring on instead; the current one and anything fainted is inert
+    const char *sn[4]; int sw[4]; int snN = 0;
+    for (uint8_t i = 0; i < btlSquadN && i < 4; i++) {
+      sn[snN] = ((i == btlSquadAt) ? btlYou : btlSquad[i]).name; sw[snN++] = BTL_CELL_W - 20;
+    }
+    const UiFont &swFont = uiFitAll(UIF_SMALL, sn, sw, snN);   // one size for every name in the grid
     for (uint8_t i = 0; i < btlSquadN && i < 4; i++) {
       int x = BTL_CELL_X(i), y = BTL_CELL_Y(i);
       const Combatant &m = (i == btlSquadAt) ? btlYou : btlSquad[i];
@@ -5697,20 +5725,24 @@ void renderBattle() {
       gfx->fillRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, usable ? UI_BG_DAY : UI_TRACK_TEXT);
       gfx->drawRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, usable ? UI_INK : 0x8410);
       uint16_t tc = usable ? UI_INK : 0x8410;
-      uiTextFit(UIF_SMALL, x + 10, y + 19, m.name, tc, 0, BTL_CELL_W - 20);
+      uiText(swFont, x + 10, y + 19, m.name, tc, 0);
       char hp[20];
       snprintf(hp, sizeof(hp), "%u/%u", m.hp, m.maxHp);
       uiText(UIF_TINY, x + 10, y + 38, hp, tc, 0);
     }
   } else {
     drawBtlBack();
+    const char *mn[MOVE_SLOTS]; int mw[MOVE_SLOTS]; int mnN = 0;
+    for (int i = 0; i < MOVE_SLOTS; i++)
+      if (btlYou.moves[i]) { mn[mnN] = MOVE_TBL[btlYou.moves[i]].name; mw[mnN++] = BTL_CELL_W - 20; }
+    const UiFont &mvFont = uiFitAll(UIF_SMALL, mn, mw, mnN);   // one size for every move in the grid
     for (int i = 0; i < MOVE_SLOTS; i++) {
       int x = BTL_CELL_X(i), y = BTL_CELL_Y(i);
       uint8_t mv = btlYou.moves[i];
       gfx->fillRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, mv ? UI_BG_DAY : UI_TRACK_TEXT);
       gfx->drawRoundRect(x, y, BTL_CELL_W, BTL_CELL_H, 10, UI_INK);
       if (!mv) continue;
-      uiTextFit(UIF_SMALL, x + 10, y + 19, MOVE_TBL[mv].name, UI_INK, 0, BTL_CELL_W - 20);
+      uiText(mvFont, x + 10, y + 19, MOVE_TBL[mv].name, UI_INK, 0);
       // Same chip as the move list: in a fight the type IS the decision.
       int cw = drawTypeChip(x + 10, y + 23, MOVE_TBL[mv].type);
       if (hasStab(btlYou.dex, MOVE_TBL[mv].type) &&
@@ -6595,6 +6627,32 @@ static void renderRegionPick(uint8_t mode) {
   else snprintf(ttl, sizeof(ttl), T(S_POKEDEX_FMT), pet.registeredCount(), DEX_COUNT);
   uiTextFit(UIF_MID, CX, 70, ttl, UI_INK, 1, 280);
 
+  // The subtitle a row shows. At first boot there is none: naming the starter here
+  // would give away the next screen, and the counts the other two modes show would
+  // all read zero on a new save anyway.
+  auto subFor = [&](uint8_t i, bool open, char *sub, size_t n) {
+    sub[0] = 0;
+    if (mode == RPICK_FOR_START && open) return;
+    if (!open)
+      snprintf(sub, n, "%s", T(S_NEED_PACK));
+    else if (mode == RPICK_FOR_GYMS)
+      snprintf(sub, n, T(S_BADGES_FMT), pet.badgeCountIn(i, gymHard));
+    else if (mode == RPICK_FOR_DEX)
+      snprintf(sub, n, "%u/%u", pet.registeredCountIn(REGIONS[i].lo, REGIONS[i].hi),
+               (unsigned)(REGIONS[i].hi - REGIONS[i].lo + 1));
+  };
+  // every region name on the page at one size: the tightest row decides it
+  const char *rn[RPICK_PER_PAGE]; int rw[RPICK_PER_PAGE]; int rnN = 0;
+  for (uint8_t row = 0; row < RPICK_PER_PAGE && first + row < nreg; row++) {
+    uint8_t i = (uint8_t)(first + row);
+    char sub[28];
+    subFor(i, forGyms || regionAvailable(i), sub, sizeof(sub));
+    int subW = sub[0] ? uiTextWidth(UIF_SMALL, sub) : 0;
+    rn[rnN] = forGyms ? TRAINER_SETS[i].region : REGIONS[i].name;
+    rw[rnN++] = RPICK_W - 36 - subW - (subW ? 8 : 0);
+  }
+  const UiFont &regFont = uiFitAll(UIF_MID, rn, rw, rnN);
+
   for (uint8_t row = 0; row < RPICK_PER_PAGE; row++) {
     uint8_t i = (uint8_t)(first + row);
     if (i >= nreg) break;
@@ -6606,27 +6664,11 @@ static void renderRegionPick(uint8_t mode) {
     gfx->fillRoundRect(RPICK_X, y, RPICK_W, RPICK_H, 12, open ? UI_WHITE : UI_BG_DAY);
     gfx->drawRoundRect(RPICK_X, y, RPICK_W, RPICK_H, 12, open ? UI_INK : UI_TRACK_TEXT);
     const char *nm = forGyms ? TRAINER_SETS[i].region : REGIONS[i].name;
-    // At first boot there is no subtitle: naming the starter here would give
-    // away the next screen, and the counts the other two modes show would all
-    // read zero on a new save anyway.
     char sub[28];
-    sub[0] = 0;
-    if (!open)
-      snprintf(sub, sizeof(sub), "%s", T(S_NEED_PACK));
-    else if (mode == RPICK_FOR_GYMS)
-      snprintf(sub, sizeof(sub), T(S_BADGES_FMT), pet.badgeCountIn(i, gymHard));
-    else if (mode == RPICK_FOR_DEX)
-      snprintf(sub, sizeof(sub), "%u/%u",
-               pet.registeredCountIn(REGIONS[i].lo, REGIONS[i].hi),
-               (unsigned)(REGIONS[i].hi - REGIONS[i].lo + 1));
-    int subW = 0;
-    if (sub[0]) {
-      subW = uiTextWidth(UIF_SMALL, sub);
+    subFor(i, open, sub, sizeof(sub));
+    if (sub[0])
       uiText(UIF_SMALL, RPICK_X + RPICK_W - 18, uiMidY(UIF_SMALL, y, RPICK_H), sub, UI_TRACK_TEXT, 2);
-    }
-    // the name takes whatever the subtitle leaves
-    uiTextFit(UIF_MID, RPICK_X + 18, uiMidY(UIF_MID, y, RPICK_H), nm, open ? UI_INK : UI_TRACK_TEXT, 0,
-              RPICK_W - 36 - subW - (subW ? 8 : 0));
+    uiText(regFont, RPICK_X + 18, uiMidY(regFont, y, RPICK_H), nm, open ? UI_INK : UI_TRACK_TEXT, 0);
   }
   if (forGyms) {
     gfx->fillRoundRect(LANBTN_X, LANBTN_Y, LANBTN_W, LANBTN_H, 11, UI_BG_DAY);
@@ -6804,6 +6846,13 @@ void drawMenu() {
   gfx->fillRoundRect(MENU_X, MENU_Y, MENU_W, MENU_H, 18, UI_WHITE);
   gfx->drawRoundRect(MENU_X, MENU_Y, MENU_W, MENU_H, 18, UI_INK);
 
+  char lbls[MENU_ROWS][28];
+  const char *lp[MENU_ROWS]; int lw[MENU_ROWS];
+  for (int i = 0; i < MENU_ROWS; i++) {
+    menuRowLabel(i, lbls[i], sizeof(lbls[i]));
+    lp[i] = lbls[i]; lw[i] = MENU_W - 60;
+  }
+  const UiFont &rowFont = uiFitAll(UIF_SMALL, lp, lw, MENU_ROWS);   // one size for every row
   for (int i = 0; i < MENU_ROWS; i++) {
     int y = MENU_ROW_Y(i);
     bool close = (i == MENU_ROWS - 1);
@@ -6812,9 +6861,7 @@ void drawMenu() {
     gfx->fillRoundRect(MENU_X + 18, y, MENU_W - 36, MENU_ROW_H, 12,
                        retire ? UI_BAR_BAD : close || dead ? UI_TRACK_TEXT : UI_BG_DAY);
     gfx->drawRoundRect(MENU_X + 18, y, MENU_W - 36, MENU_ROW_H, 12, UI_INK);
-    char lbl[28];
-    menuRowLabel(i, lbl, sizeof(lbl));
-    uiTextFit(UIF_SMALL, CX, uiMidY(UIF_SMALL, y, MENU_ROW_H), lbl, retire ? UI_WHITE : UI_INK, 1, MENU_W - 60);   // one size for every row
+    uiText(rowFont, CX, uiMidY(rowFont, y, MENU_ROW_H), lbls[i], retire ? UI_WHITE : UI_INK, 1);
   }
 }
 
