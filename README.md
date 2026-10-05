@@ -3,7 +3,7 @@
 [![Flash in browser](https://img.shields.io/badge/flash-in%20browser-FF6B00?logo=googlechrome&logoColor=white)](https://crenberries428.github.io/TamaPoke/web/)
 [![MakerWorld](https://img.shields.io/badge/MakerWorld-3D%20case-00AE42?logo=bambulab&logoColor=white)](https://makerworld.com/es/models/2937822-tamapoke-a-pokemon-pokeball-tamagotchi)
 ![Board](https://img.shields.io/badge/board-ESP32--S3%20round%20AMOLED-E7352C?logo=espressif&logoColor=white)
-![Firmware](https://img.shields.io/badge/firmware-v3.12-8A2BE2)
+![Firmware](https://img.shields.io/badge/firmware-v3.13-8A2BE2)
 ![Code](https://img.shields.io/badge/code-MIT-blue)
 ![Languages](https://img.shields.io/badge/languages-8-FFCB05)
 [![Stars](https://img.shields.io/github/stars/crenberries428/TamaPoke?style=flat&logo=github&color=yellow)](https://github.com/crenberries428/TamaPoke/stargazers)
@@ -677,14 +677,42 @@ character with no glyph. Species and move names stay in English in every languag
 ## Backgrounds: biome + real time
 
 The idle screen paints the sky from the **RTC's real time** (dawn / day / dusk /
-night) and the ground from the **type's biome** (meadow,
-beach, forest, volcano, mountain, snow). Sleeping forces night.
+night) and the scenery from the creature's **biome**, chosen by its primary type
+(`TYPE_BIOME` in `tools/gen_dex.py`, stored in `DexEntry::biome`; eggs are always
+meadow). The sky follows the clock only: a creature asleep at noon sleeps in daylight.
 
 By day a haloed sun with slowly turning rays sits over three puffy, shaded
 clouds that drift at different speeds. At night a crescent moon with craters and a
 soft halo rises over 40 stars. Their positions are rolled at random on every boot and each twinkles on its own
 rhythm; the brightest ones sparkle with a small cross. The same stars are
 behind the minigames.
+
+Each biome is hand-drawn in code (`drawScene()` and one `draw<Biome>()` per
+biome in `TamaPoke.ino`): layered tones lit from the sun side, animated, and
+laid out around the UI. Scenery is kept off the lower left (where poops land),
+off the step counter at the far left and below the sun and moon.
+
+| Biome | Types | Scenery | Day / night residents |
+|---|---|---|---|
+| Meadow | normal, electric, fighting, poison, psychic, fairy, flying | windy tall grass that ripples in travelling waves, wildflowers, layered hills, drifting seed fluff | Butterfree overhead + Rattata in the grass / fireflies + Venomoth |
+| Beach | water, dragon, fossils | banded sea with drifting crests and a glitter path, island, sailboat, a tide washing foam over wet sand | Wingull + Exeggutor on the shore / the shore alone |
+| Forest | grass, bug, dark | two tree lines with mist, a swaying oak with Oran berries, a pine, bush, ferns, mushrooms, falling leaves | Beedrill + Caterpie / fireflies + Zubat |
+| Volcano | fire | craggy cone with lava streams, bubbling crater, periodic eruption bursts, lava bombs, smoke, glowing ground cracks, faceted boulders, a charred tree | Slugma (any hour) |
+| Mountain | rock, ground, steel | three hazy snow-capped ranges, drifting fog, a cliff with an animated waterfall and misty pool, a pine, boulders, edelweiss | Fearow + Geodude / Golbat + Cubone |
+| Snow | ice | polar ice: faceted icebergs, an open lead, ridges and cracks, heavy slanted snowfall; at night a swaying aurora of green, cyan and violet rays | Piplup (Seel without the Sinnoh pack) |
+| Graveyard | ghost | haunted house with flickering windows, gnarled trees, iron fence, seven gravestones, scattered bones, drifting fog, will-o'-wisps, bats at night | Gastly / Haunter |
+
+The residents are real PMD sprites, kept small and behind the pet. Each is loaded
+only while its biome is on screen (about 110-180 KB of PSRAM) and freed when the
+biome changes; a species whose pack is not on the card simply does not appear.
+Flyers use the species' Walk animation, which for Butterfree, Beedrill, Venomoth,
+Golbat, Zubat, Wingull and Fearow is a flapping flight (Pidgeotto's is a ground
+walk, so it is not used). Battles fight on the foe's biome art; ghosts borrow the
+forest's, since there is no graveyard battle scene.
+
+To look at one without hunting for a species, use the serial `BIOME <0-6>`
+command (0 meadow, 1 beach, 2 forest, 3 volcano, 4 mountain, 5 snow, 6 graveyard).
+It is not saved; a reboot goes back to the species' own biome.
 
 ## Layout
 
@@ -716,7 +744,7 @@ legendary/shiny IV guarantees, which apply at hatch) ·
 runaway-ready state) · `WIPE` (factory reset → new game) · `BEEP` (audio test) ·
 `REG` (Pokédex) · `EGGS` (simulate 20 eggs) · `GAL` (gallery) · `CAREDAY` ·
 `PARTY` / `PARTY <dex>` / `PARTY CLEAR` (inspect and fill the party) ·
-`STEPS <n>` (set today's step count) · `TIME <epoch>` / `RTCSET <epoch>` · `HEALTH` (uptime + heap for the soak test) ·
+`STEPS <n>` (set today's step count) · `BIOME <0-6>` (force a scenery biome) · `TIME <epoch>` / `RTCSET <epoch>` · `HEALTH` (uptime + heap for the soak test) ·
 `LS` / `PUT` (SD files).
 
 To test fast: lower `PET_TICK_MS`, `MINUTES_PER_LEVEL` and `FAREWELL_AGE_MIN` in `pet.h`.
