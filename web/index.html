@@ -31,11 +31,13 @@
   code { background:#0001; padding:.1em .4em; border-radius:5px; }
   a { color:var(--accent); }
   .note { font-size:.9rem; color:#6b6b76; }
+  .ver { display:inline-block; font-size:.85rem; font-weight:600; padding:.15rem .7rem; border-radius:999px;
+         background:var(--accent); color:#fff; vertical-align:middle; margin-left:.5rem; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>🐢 TamaPoke</h1>
+  <h1>🐢 TamaPoke <span class="ver" id="fwver" title="The firmware this page installs">firmware</span></h1>
   <p class="sub">A 386-Pokémon tamagotchi for the Waveshare ESP32-S3-Touch-AMOLED-1.75.
      Install it from your browser — no Arduino, no drivers.</p>
 
@@ -128,6 +130,14 @@
 
 <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
 <script>
+// The version label reads manifest.json, the same file the installer flashes
+// from; build_web.sh writes it from FW_VERSION. A version typed into this page
+// would be one more copy to forget.
+fetch('manifest.json', { cache: 'no-store' })
+  .then(r => r.json())
+  .then(m => { if (m.version) document.getElementById('fwver').textContent = 'firmware v' + m.version; })
+  .catch(() => {});
+
 const log = (m) => { const el = document.getElementById('log'); el.style.display='block';
   el.textContent += m + '\n'; el.scrollTop = el.scrollHeight; };
 const supported = 'serial' in navigator;
