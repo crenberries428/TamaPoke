@@ -154,6 +154,13 @@ const LinkNowStats &linkNowStats() { return gNoStats; }
 // audio is silent here, but the sketch calls these, so they have to exist
 static uint8_t g_emuVol = 50, g_emuMusic = 0;
 void audioMusic(uint8_t id) { g_emuMusic = id; }
+// the jukebox is silent too; names come from the same table the board uses
+#include "../../music.h"
+void audioPlayTrack(uint8_t track) { g_emuMusic = (track < MUSIC_TRACKS) ? 16 + track : 0; }
+uint8_t audioTrackCount() { return MUSIC_TRACKS; }
+const char *audioTrackName(uint8_t track) {
+  return (track < MUSIC_TRACKS) ? MUSIC_TBL[track].name : "";
+}
 void audioSetVolume(uint8_t v) { g_emuVol = v > 100 ? 100 : v; }
 void audioSaveVolume() {}
 uint8_t audioVolume() { return g_emuVol; }

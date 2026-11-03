@@ -1155,6 +1155,21 @@ void handleSerial() {
   } else if (line == "BEEP") {
     sfxPlay(SFX_HATCH);  // audio test
     Serial.println("DONE");
+  } else if (line == "MUSIC") {
+    // lists the tunes in music.h; MUSIC <n> plays one on a loop, MUSIC OFF stops
+    for (uint8_t i = 0; i < audioTrackCount(); i++)
+      Serial.printf("%u %s\n", i, audioTrackName(i));
+    Serial.println("DONE");
+  } else if (line == "MUSIC OFF") {
+    audioMusic(MUS_NONE);
+    Serial.println("DONE");
+  } else if (line.startsWith("MUSIC ")) {
+    const char *arg = line.c_str() + 6;
+    int t = atoi(arg);
+    if (*arg < '0' || *arg > '9' || t >= audioTrackCount()) { Serial.println("MUSIC ?"); return; }
+    if (!audioEnabled()) Serial.println("sound is OFF in settings");
+    audioPlayTrack((uint8_t)t);
+    Serial.printf("playing %s\n", audioTrackName((uint8_t)t));
   } else if (line == "ABANDON") {
     pet.dbgRunawayReady();  // forces the "ready to run away" state (button test)
     Serial.println("DONE");
