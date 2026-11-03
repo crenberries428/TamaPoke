@@ -9,6 +9,9 @@
 #include "party.h"
 #include "battle.h"
 #include "i18n.h"
+#include "audio.h"
+void openJukebox();
+extern uint8_t jukePage;
 #include <chrono>
 #include <string>
 #include <deque>
@@ -278,6 +281,9 @@ static int shotMode(const char *screen, const char *out, int lvl, int iv, int de
   else if (!strncmp(screen, "clock", 5) && screen[5] >= '0' && screen[5] <= '4') { clockOpen = true; settingsPage = (uint8_t)(screen[5] - '0'); }
   else if (!strcmp(screen, "menu"))    menuOpen = true;
   else if (!strcmp(screen, "train"))   trainOpen = true;
+  else if (!strcmp(screen, "jukebox")) { pet.tunes = 0x01F9; openJukebox(); audioPlayTrack(TUNE_PALLET); }
+  else if (!strcmp(screen, "jukebox2")) { pet.tunes = 0x01F9; openJukebox(); jukePage = 1; }
+  else if (!strcmp(screen, "dance"))   { audioPlayTrack(TUNE_PALLET); pet.musicOn = true; usleep(300000); }
   else if (!strcmp(screen, "moves"))   { cardOpen = true; cardPage = 2; }
   else if (!strcmp(screen, "movepick")) { movePickOpen = true; }
   else if (!strcmp(screen, "battle2")) { startBattle(9, 50); }

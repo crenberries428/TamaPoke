@@ -22,8 +22,8 @@ extern Arduino_Canvas *gfx;
 extern Pet pet;
 extern uint8_t settingsPage;
 extern bool cardOpen, galleryOpen, clockOpen, kbOpen, menuOpen, partyOpen, partyPick;
-extern bool trainOpen, movePickOpen, battleOpen, gymOpen, playerOpen;
-extern uint8_t cardPage;
+extern bool trainOpen, movePickOpen, battleOpen, gymOpen, playerOpen, jukeOpen;
+extern uint8_t cardPage, jukePage;
 extern uint8_t partyDetail, boxDetail;
 extern bool boxOpen, releaseConfirm;
 extern Party party;
@@ -32,7 +32,7 @@ void startBattle(int16_t dex, uint8_t lvl);
 static int bad = 0;
 static void clearAll(){
   cardOpen=galleryOpen=clockOpen=kbOpen=menuOpen=partyOpen=partyPick=false;
-  trainOpen=movePickOpen=battleOpen=gymOpen=playerOpen=false;
+  trainOpen=movePickOpen=battleOpen=gymOpen=playerOpen=jukeOpen=false;
   boxOpen=releaseConfirm=false;
   partyDetail=boxDetail=0;
 }
@@ -68,6 +68,8 @@ int main(){
   clearAll(); gymOpen=true;      check("gyms");
   clearAll(); playerOpen=true;   check("player");
   clearAll(); menuOpen=true;     check("menu");
+  for (uint8_t p=0;p<2;p++){ clearAll(); jukeOpen=true; jukePage=p;
+    char n[16]; snprintf(n,sizeof(n),"jukebox%u",p); check(n); }
   clearAll(); partyOpen=true;    check("party");
   for (uint8_t p=0;p<5;p++){ clearAll(); clockOpen=true; settingsPage=p;
     char n[16]; snprintf(n,sizeof(n),"settings%u",p); check(n); }
@@ -90,6 +92,7 @@ int main(){
   clearAll();                       crumbIs("main");
   clearAll(); trainOpen=true;       crumbIs("train");
   clearAll(); menuOpen=true;        crumbIs("menu");
+  clearAll(); jukeOpen=true;        crumbIs("jukebox");
   clearAll(); partyOpen=true;       crumbIs("party");
   clearAll(); gymOpen=true;         crumbIs("gym");
   clearAll(); playerOpen=true;      crumbIs("player");

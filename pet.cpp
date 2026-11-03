@@ -38,6 +38,62 @@ static void loadBlob(Preferences &p, const char *key, void *dst, size_t n) {
   free(tmp);
 }
 
+// The jukebox's unlock rules, in TUNE_* order. Unsized on purpose: a positional
+// table declared [TUNE_COUNT] would zero-fill a missing row into TRULE_FREE and
+// quietly give the song away; the static_assert makes a new tune a compile error
+// until somebody decides how it is earned.
+static const TuneRule TUNE_RULES[] = {
+  { TRULE_BADGES, 1 },      // TUNE_GYM: the theme you just fought to
+  { TRULE_BADGES, 4 },      // TUNE_TRN
+  { TRULE_BADGES, 8 },      // TUNE_WILD
+  { TRULE_BADGES, 1 },      // TUNE_WIN: and the fanfare that followed
+  { TRULE_FREE, 0 },        // TUNE_TITLE: the jukebox is never empty
+  { TRULE_HATCH, 1 },       // TUNE_PALLET: where every journey starts
+  { TRULE_GOODBYE, 0 },     // TUNE_LAVENDER: the town of farewells
+  { TRULE_STREAK, 3 },      // TUNE_CENTER: looking after it, day after day
+  { TRULE_STEPS, 1000 },    // TUNE_ROUTE1: out walking
+};
+static_assert(sizeof(TUNE_RULES) / sizeof(TUNE_RULES[0]) == TUNE_COUNT,
+              "every song in music.h needs a rule in TUNE_RULES");
+
+const TuneRule &tuneRule(uint8_t t) { return TUNE_RULES[t < TUNE_COUNT ? t : TUNE_TITLE]; }
+
+bool Pet::tuneEarned(uint8_t t) const {
+  if (t >= TUNE_COUNT) return false;
+  const TuneRule &r = TUNE_RULES[t];
+  switch (r.kind) {
+    case TRULE_FREE:    return true;
+    case TRULE_BADGES:  return badgeCount(false) + badgeCount(true) >= r.n;
+    case TRULE_HATCH:   return registeredCount() >= r.n;
+    case TRULE_GOODBYE: return lastEnd != CER_NONE;
+    case TRULE_STREAK:  return bestStreak >= r.n;
+    case TRULE_STEPS:   return stepsToday() >= r.n;
+  }
+  return false;
+}
+
+uint16_t Pet::checkTunes(bool announce) {
+  uint16_t fresh = 0;
+  for (uint8_t t = 0; t < TUNE_COUNT; t++)
+    if (!tuneUnlocked(t) && tuneEarned(t)) fresh |= (uint16_t)1 << t;
+  if (!fresh) return 0;
+  tunes |= fresh;
+  pendingSave = true;
+  if (announce) {
+    for (uint8_t t = 0; t < TUNE_COUNT; t++)
+      if ((fresh >> t) & 1) tuneToastId = t;
+    tuneToastUntil = millis() + 4000;
+  }
+  return fresh;
+}
+
+void Pet::listenTick() {
+  if (listenDay != today()) { listenDay = today(); listenMin = 0; }
+  if (listenMin >= LISTEN_DAILY_MIN) return;   // the day's share is spent
+  listenMin++;
+  if (listenMin % LISTEN_EVERY == 0) joy = clamp100(joy + LISTEN_JOY);
+}
+
 void Pet::begin() {
   prefs.begin("tamapoke", false);
   opened = true;
@@ -52,12 +108,14 @@ void Pet::begin() {
   memset(dexReg, 0, sizeof(dexReg));
   memset(dexShinyReg, 0, sizeof(dexShinyReg));
   for (int i = 0; i < REGION_COUNT; i++) eggByRegion[i] = 0;
+  tunes = 0; listenMin = 0; listenDay = 0;
   if (!prefs.getBool("init", false)) {
     prefs.putBool("init", true);
     newEgg();
   } else {
     load();
   }
+  checkTunes(false);   // an older save earns what it already qualifies for, quietly
   lastTick = millis();
 }
 
@@ -164,6 +222,7 @@ void Pet::update(uint32_t nowMs) {
 }
 
 void Pet::tick() {
+  checkTunes();   // first, so a song earned during a ceremony is not held back
   if (ceremony != CER_NONE) return;  // time stops at the farewell
   if (starterPick) return;  // the game does not start until a starter is chosen: if
                             // time ran here, the egg would hatch by itself after
@@ -214,6 +273,7 @@ void Pet::tick() {
   if (weight > 0 && ageMinutes % 3 == 0) weight--;
 
   defTick(false);  // calm forges defence
+  if (musicOn) listenTick();   // awake only: the sleeping branch returned above
 
   if (drainNow) {
     int dJoy = -1;
@@ -1366,6 +1426,9 @@ void Pet::save() {
   prefs.putUInt("stps", stepCount);
   prefs.putUInt("sday", stepDay);
   prefs.putUChar("stpc", stepClaim);
+  prefs.putUShort("tune", tunes);
+  prefs.putUChar("lsnm", listenMin);
+  prefs.putUInt("lsnd", listenDay);
   prefs.putUChar("bond", bond);
   prefs.putUShort("medal", medals);
   prefs.putUShort("tmedal", totalMedals);
@@ -1435,6 +1498,9 @@ void Pet::load() {
   stepCount = prefs.getUInt("stps", 0);
   stepDay = prefs.getUInt("sday", 0);
   stepClaim = prefs.getUChar("stpc", 0);
+  tunes = prefs.getUShort("tune", 0);   // absent before the jukebox: nothing yet
+  listenMin = prefs.getUChar("lsnm", 0);
+  listenDay = prefs.getUInt("lsnd", 0);
   bond = prefs.getUChar("bond", 0);
   medals = prefs.getUShort("medal", 0);
   totalMedals = prefs.getUShort("tmedal", 0);

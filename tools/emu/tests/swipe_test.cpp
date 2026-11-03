@@ -17,7 +17,8 @@ String FakeSerial::readStringUntil(char){return String("");}
 void setup(); void render(); void onSwipe(int dir); void onSwipeV(int dir);
 extern Pet pet;
 extern bool cardOpen, galleryOpen, clockOpen, kbOpen, menuOpen, partyOpen, partyPick;
-extern bool trainOpen, movePickOpen, battleOpen, gymOpen, playerOpen, boxOpen, pickOpen;
+extern bool trainOpen, movePickOpen, battleOpen, gymOpen, playerOpen, boxOpen, pickOpen, jukeOpen;
+extern uint8_t jukePage;
 extern uint8_t cardPage, gymPage, playerPage, movePickPage, boxPage, pickPage, partyDetail;
 extern int galleryPage; extern bool galleryDirty; extern uint8_t galleryDetail;
 extern uint8_t galleryRegion;
@@ -44,7 +45,7 @@ static int bad=0;
 static void clearAll(){
   gymPick=galleryPick=false;
   cardOpen=galleryOpen=clockOpen=kbOpen=menuOpen=partyOpen=partyPick=false;
-  trainOpen=movePickOpen=battleOpen=gymOpen=playerOpen=boxOpen=pickOpen=false;
+  trainOpen=movePickOpen=battleOpen=gymOpen=playerOpen=boxOpen=pickOpen=jukeOpen=false;
   partyDetail=0; boxSel=boxSwapFrom=0;
 }
 // swipe left; the page must advance and the screen must stay open
@@ -85,6 +86,17 @@ int main(){
   }
   clearAll(); gymOpen=true; gymPick=false;        check("gyms",     &gymOpen,      &gymPage);
   clearAll(); playerOpen=true;                    check("player",   &playerOpen,   &playerPage);
+  clearAll(); jukeOpen=true;                      check("jukebox",  &jukeOpen,     &jukePage);
+  {
+    // circular both ways, like the player card: it never closes off an end
+    clearAll(); jukeOpen=true; jukePage=0;
+    onSwipe(+1);
+    if (!jukeOpen || jukePage==0) { printf("FAIL  jukebox    right swipe on page 0 closed it or did not wrap (open=%d page=%u)\n", jukeOpen, jukePage); bad++; }
+    else printf("PASS  jukebox    wraps backwards off page 0\n");
+    onSwipeV(1);
+    if (jukeOpen) { printf("FAIL  jukebox    vertical swipe did not back out\n"); bad++; }
+    else printf("PASS  jukebox    vertical swipe backs out\n");
+  }
   {
     // the trainer pages loop both ways and a swipe never closes the screen
     clearAll(); playerOpen=true; playerPage=0;

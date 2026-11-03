@@ -282,6 +282,10 @@ void audioPlayTrack(uint8_t track) {
   gMusic = (track < MUSIC_TRACKS) ? (uint8_t)(MUS_TRACK0 + track) : MUS_NONE;
 }
 uint8_t audioTrackCount() { return MUSIC_TRACKS; }
+uint8_t audioCurrentTrack() {
+  uint8_t m = gMusic;
+  return (m >= MUS_TRACK0 && m < MUS_TRACK0 + MUSIC_TRACKS) ? (uint8_t)(m - MUS_TRACK0) : 0xFF;
+}
 const char *audioTrackName(uint8_t track) {
   return (track < MUSIC_TRACKS) ? MUSIC_TBL[track].name : "";
 }

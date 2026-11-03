@@ -158,14 +158,19 @@ void audioMusic(uint8_t id) { g_emuMusic = id; }
 #include "../../music.h"
 void audioPlayTrack(uint8_t track) { g_emuMusic = (track < MUSIC_TRACKS) ? 16 + track : 0; }
 uint8_t audioTrackCount() { return MUSIC_TRACKS; }
+uint8_t audioCurrentTrack() {
+  return (g_emuMusic >= 16 && g_emuMusic < 16 + MUSIC_TRACKS) ? (uint8_t)(g_emuMusic - 16) : 0xFF;
+}
 const char *audioTrackName(uint8_t track) {
   return (track < MUSIC_TRACKS) ? MUSIC_TBL[track].name : "";
 }
 void audioSetVolume(uint8_t v) { g_emuVol = v > 100 ? 100 : v; }
 void audioSaveVolume() {}
 uint8_t audioVolume() { return g_emuVol; }
-void audioSetEnabled(bool on) { (void)on; }
-bool audioEnabled() { return true; }
+// remembered, so a test can check that a muted jukebox does not count as music
+static bool g_emuSnd = true;
+void audioSetEnabled(bool on) { g_emuSnd = on; }
+bool audioEnabled() { return g_emuSnd; }
 
 // Why the last run ended. The tests link this file but not main_sdl.cpp, so the
 // state lives here and the GUI sets it after reading a simulated crash.
