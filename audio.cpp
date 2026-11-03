@@ -127,6 +127,8 @@ static const TuneDef MUSIC[] = {
   { M_VICTORY, 5, false },
 };
 static volatile uint8_t gMusic = MUS_NONE;
+// gMusic values from here up are MUSIC_TBL[gMusic - MUS_TRACK0]
+static const uint8_t MUS_TRACK0 = 16;
 static volatile uint8_t gVol = 50;   // 0..100
 
 static int16_t buf[256 * 2];  // interleaved stereo (L=R)
@@ -244,12 +246,14 @@ static void audioTask(void *) {
     // 0 = the gym leader battle, 3 = the victory fanfare. Winning used to play
     // index 2, which is the WILD BATTLE theme -- so a win sounded like the fight
     // had started again.
-    const MusicTrack &t = MUSIC_TBL[(m == MUS_VICTORY) ? 3 : 0];
-    // start whichever channel is due
+    // Anything from MUS_TRACK0 up is a jukebox track.
+    const MusicTrack &t = MUSIC_TBL[(m >= MUS_TRACK0) ? m - MUS_TRACK0
+                                    : (m == MUS_VICTORY) ? 3 : 0];
+    // start whichever channel is due; each loops back past its own intro
     if (clock >= at1) {
       if (mi1 >= t.n1) {                       // loop, or stop a one-shot
         if (m == MUS_VICTORY) { gMusic = MUS_NONE; continue; }
-        mi1 = 0; at1 = clock;
+        mi1 = t.loop1; at1 = clock;
       }
       const MusicNote &n = t.ch1[mi1++];
       if (n.freq) gSyn.note(0, n.freq, n.duty, n.vol, n.envDir, n.envPeriod, n.ms);
@@ -257,7 +261,7 @@ static void audioTask(void *) {
       at1 = clock + n.ms;
     }
     if (clock >= at2) {
-      if (mi2 >= t.n2) { mi2 = 0; at2 = clock; }
+      if (mi2 >= t.n2) { mi2 = t.loop2; at2 = clock; }
       const MusicNote &n = t.ch2[mi2++];
       if (n.freq) gSyn.note(1, n.freq, n.duty, n.vol, n.envDir, n.envPeriod, n.ms);
       else gSyn.silence(1);
@@ -273,6 +277,14 @@ static void audioTask(void *) {
 }
 
 void audioMusic(uint8_t id) { gMusic = (id < 3) ? id : MUS_NONE; }
+
+void audioPlayTrack(uint8_t track) {
+  gMusic = (track < MUSIC_TRACKS) ? (uint8_t)(MUS_TRACK0 + track) : MUS_NONE;
+}
+uint8_t audioTrackCount() { return MUSIC_TRACKS; }
+const char *audioTrackName(uint8_t track) {
+  return (track < MUSIC_TRACKS) ? MUSIC_TBL[track].name : "";
+}
 
 void audioSetVolume(uint8_t v) { gVol = v > 100 ? 100 : v; }
 void audioSaveVolume() {
