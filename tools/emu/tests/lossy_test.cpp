@@ -185,6 +185,32 @@ int main(){
     deaf=false;
   }
 
+  // --- a slow PLAYER is not a lost PEER --------------------------------------
+  // Found on two boards: in READY neither side had anything to resend, so the
+  // radio went silent while somebody chose a move and the link timed out at
+  // the deadline (12 s then). Both phases are checked: before the first move
+  // (both sides idle) and after a result (the host still repeats it, so only
+  // the host timed out).
+  {
+    seen=dropped=0; deaf=false; dropEvery=3; dupEvery=0;
+    pair(true,false);
+    run(3000);
+    ck(A.ready() && B.ready(), "paired for the idle check");
+    run(LINK_BATTLE_TIMEOUT_MS * 5, 100);
+    ck(A.ready() && B.ready(),
+       "a minute of nobody choosing, before the first move, keeps both live");
+    B.sendAct(1); run(2000);
+    ck(A.hasPeerAct(), "the late first move still lands");
+    LinkResult r{}; r.hostHp = 50; r.guestHp = 50;
+    A.sendResult((const uint8_t*)&r, sizeof(r));
+    run(2000);
+    ck(B.resultNew && B.ready(), "the guest has the result");
+    run(LINK_BATTLE_TIMEOUT_MS * 5, 100);
+    ck(A.live() && B.ready(),
+       "a minute of the guest thinking, after a result, keeps both live");
+    dropEvery=0;
+  }
+
   // --- leaving on purpose is instant, not a timeout ------------------------
   {
     pair(true,false);
