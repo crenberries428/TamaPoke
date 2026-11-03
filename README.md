@@ -789,6 +789,7 @@ legendary/shiny IV guarantees, which apply at hatch) ·
 runaway-ready state) · `WIPE` (factory reset → new game) · `BEEP` (audio test) ·
 `REG` (Pokédex) · `EGGS` (simulate 20 eggs) · `GAL` (gallery) · `CAREDAY` ·
 `PARTY` / `PARTY <dex>` / `PARTY CLEAR` (inspect and fill the party) ·
+`MISS <n>` (set care mistakes; 0 forgives the evolution delay) · `EVOPEN <n>` (set/clear the inherited early-retire evolution delay) · `TR <atk> <def> <spd>` (set training, clamped to the IV ceiling) · `EGGSET <dex>` (change the species in the waiting egg without hatching it) ·
 `STEPS <n>` (set today's step count) · `BIOME <0-6>` (force a scenery biome) · `TIME <epoch>` / `RTCSET <epoch>` · `HEALTH` (uptime + heap for the soak test) ·
 `LS` / `PUT` (SD files).
 

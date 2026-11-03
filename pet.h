@@ -345,6 +345,7 @@ public:
   // retire that is already running actually was, and outlives the moment it began.
   bool retireIsEarly() const { return retirePending; }
   uint8_t evoPenalty() const { return evoPen; }
+  void dbgSetEvoPenalty(uint8_t n) { evoPen = n; }  // debug console only
   void startRunaway();   // also usable from the serial console (RUN)
 
   bool isEgg() const { return speciesId < 0; }
@@ -381,6 +382,12 @@ public:
   // test: force what the egg holds and hatch it now (serial command EGG).
   // The legendary/shiny IV guarantees only fire inside hatch(), so without
   // this there is no way to exercise them from outside the class.
+  // test: change what the WAITING egg holds without hatching it (EGGSET).
+  void dbgSetEggTarget(int16_t dex) {
+    if (dex < 1 || dex > DEX_COUNT || !isEgg()) return;
+    eggTarget = dex;
+    save();
+  }
   void dbgHatchAs(int16_t dex, bool wantShiny) {
     if (dex < 1 || dex > DEX_COUNT) return;
     eggTarget = dex;

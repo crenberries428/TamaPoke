@@ -1032,6 +1032,15 @@ void handleSerial() {
     pet.careMistakes = (uint8_t)m;
     pet.saveNow();
     Serial.printf("miss=%u\n", pet.careMistakes);
+  } else if (line.startsWith("EVOPEN ")) {
+    // EVOPEN <n>: sets the inherited early-retire evolution delay (levels).
+    // EVOPEN 0 clears the "evolves a day later" note on the card.
+    long n = line.substring(7).toInt();
+    if (n < 0) n = 0;
+    if (n > 255) n = 255;
+    pet.dbgSetEvoPenalty((uint8_t)n);
+    pet.saveNow();
+    Serial.printf("evopen=%u\n", pet.evoPenalty());
   } else if (line.startsWith("TR ")) {
     // TR <atk> <def> <spe>: sets the TRAINING (this game's EVs), for testing a
     // fully-raised creature without playing the minigames for an hour. Each is
@@ -1093,6 +1102,12 @@ void handleSerial() {
       Serial.printf("%d:%s(r%u) ", d, DEX_TBL[d].name, DEX_TBL[d].rarity);
     }
     Serial.println();
+    Serial.println("DONE");
+  } else if (line.startsWith("EGGSET ")) {
+    // EGGSET <dex>: change the species inside the waiting egg, no hatch.
+    int dex = line.substring(7).toInt();
+    pet.dbgSetEggTarget(dex);
+    Serial.printf("egg holds %d\n", pet.eggPeek());
     Serial.println("DONE");
   } else if (line.startsWith("EGG ")) {
     // EGG <dex> [shiny]: hatch a chosen species right now. The legendary and
@@ -1200,6 +1215,23 @@ void handleSerial() {
     Serial.println("DONE");
     delay(100);
     ESP.restart();
+  } else if (line.startsWith("PARTYMAX ")) {
+    // PARTYMAX <dex>: every banked member of that species to MAX_LEVEL with
+    // its training at the ceiling its IVs allow (trMaxFor), as TR does live.
+    int d = line.substring(9).toInt();
+    int hit = 0;
+    for (int i = 0; i < PARTY_SLOTS; i++) {
+      PartyMon &m = party.slots[i];
+      if (m.empty() || m.dex != d) continue;
+      m.level = MAX_LEVEL;
+      m.trAtk = Pet::trMaxFor(m.ivAtk);
+      m.trDef = Pet::trMaxFor(m.ivDef);
+      m.trSpe = Pet::trMaxFor(m.ivSpe);
+      hit++;
+    }
+    if (hit) party.save();
+    Serial.printf("maxed %d\n", hit);
+    Serial.println("DONE");
   } else if (line.startsWith("PARTY")) {
     // PARTY          list the party
     // PARTY <dex>    bank a level-50 specimen (fills slots up for testing)
