@@ -55,6 +55,19 @@ static uint16_t gbNote(int semitonesAboveC4) {
   return (uint16_t)f;
 }
 
+// `--demo gym|trainer|wild|win` (the old short names), a pokered file name such
+// as `pallettown`, or a MUSIC_TBL index -- the same number `MUSIC <n>` takes.
+static int musicIndex(const std::string &d) {
+  static const char *SHORT[] = {"gym", "trainer", "wild", "win"};
+  for (int i = 0; i < 4; i++) if (d == SHORT[i]) return i;
+  for (int i = 0; i < MUSIC_TRACKS; i++) if (d == MUSIC_TBL[i].name) return i;
+  if (!d.empty() && d.find_first_not_of("0123456789") == std::string::npos) {
+    int i = atoi(d.c_str());
+    if (i < MUSIC_TRACKS) return i;
+  }
+  return -1;
+}
+
 int wavMain(const char *path, const char *demo) {
   GbSynth syn;
   std::vector<int16_t> out;
@@ -95,31 +108,32 @@ int wavMain(const char *path, const char *demo) {
       run(syn, out, 400);
       printf("dex %d: %u ms\n", dex, CryPlayer::lengthMs(dex));
     }
-  } else if (d == "gym" || d == "trainer" || d == "wild" || d == "win") {
-    // A REAL battle theme, both pulse channels, exactly as the data says.
-    int t = (d == "gym") ? 0 : (d == "trainer") ? 1 : (d == "wild") ? 2 : 3;
-    const MusicTrack &m = MUSIC_TBL[t];
+  } else if (musicIndex(d) >= 0) {
+    // A REAL Game Boy tune, both pulse channels, exactly as the data says and
+    // looping each channel past its intro the way audio.cpp does.
+    const MusicTrack &m = MUSIC_TBL[musicIndex(d)];
     printf("playing %s (%u + %u events)\n", m.name, m.n1, m.n2);
     uint32_t at1 = 0, at2 = 0;      // ms consumed on each channel
     uint16_t i1 = 0, i2 = 0;
     uint32_t clock = 0;
-    const uint32_t LIMIT = 30000;   // 30 s is plenty to judge it
-    while (clock < LIMIT && (i1 < m.n1 || i2 < m.n2)) {
-      if (i1 < m.n1 && clock >= at1) {
-        const MusicNote &n = m.ch1[i1];
+    const uint32_t LIMIT = 60000;   // a minute: long enough to hear it loop
+    while (clock < LIMIT) {
+      if (clock >= at1) {
+        if (i1 >= m.n1) i1 = m.loop1;
+        const MusicNote &n = m.ch1[i1++];
         if (n.freq) syn.note(0, n.freq, n.duty, n.vol, n.envDir, n.envPeriod, n.ms);
         else syn.silence(0);
-        at1 += n.ms; i1++;
+        at1 += n.ms;
       }
-      if (i2 < m.n2 && clock >= at2) {
-        const MusicNote &n = m.ch2[i2];
+      if (clock >= at2) {
+        if (i2 >= m.n2) i2 = m.loop2;
+        const MusicNote &n = m.ch2[i2++];
         if (n.freq) syn.note(1, n.freq, n.duty, n.vol, n.envDir, n.envPeriod, n.ms);
         else syn.silence(1);
-        at2 += n.ms; i2++;
+        at2 += n.ms;
       }
-      uint32_t next = LIMIT;
-      if (i1 < m.n1 && at1 < next) next = at1;
-      if (i2 < m.n2 && at2 < next) next = at2;
+      uint32_t next = (at1 < at2) ? at1 : at2;
+      if (next > LIMIT) next = LIMIT;
       if (next <= clock) next = clock + 5;
       run(syn, out, next - clock);
       clock = next;
