@@ -133,6 +133,8 @@ enum StrId : uint8_t {
   S_SET_VOLUME, S_SET_LANG, S_ABOUT,   // settings page titles
   S_SET_BRIGHT,     // settings page title
   S_TEST,           // volume page: play a beep at the chosen level
+  S_DEF_GAIN_FMT,   // "DEFENCE +%u" after the brace game
+  S_STEP_GOAL_FMT,  // "%u STEPS!" when a daily step milestone pays
   STR_COUNT
 };
 
