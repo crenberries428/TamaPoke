@@ -358,6 +358,8 @@ On hardware, verify over the serial console (115200):
 - `MUSIC` lists the tunes in `music.h` · `MUSIC <n>` loops one · `MUSIC OFF`.
   Indices 0-3 are the battle themes `audio.cpp` plays by number; new tunes go
   after them. Off the board: `tamapoke-emu --wav out.wav --demo pallettown`
+- `TUNES` the jukebox's unlocks and today's listening minutes · `TUNES ALL`
+  unlocks every song
 - `TIME <epoch>` / `RTCSET <epoch>` — offline-progression and clock paths
 
 To exercise long-horizon logic in minutes, temporarily lower `PET_TICK_MS`,

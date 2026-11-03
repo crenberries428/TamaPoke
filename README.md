@@ -132,6 +132,19 @@ way. Same reasoning that makes Hoenn Emerald throughout.
 |---|---|---|
 | <img src="docs/screens/player.png" width="240"> | <img src="docs/screens/player2.png" width="240"> | <img src="docs/screens/box.png" width="240"> |
 
+### Jukebox
+
+Tap the name, then **Jukebox**. Nine Pokémon Red/Blue tunes, played on the
+built-in Game Boy synth. Tap a song to play it, and tap it again to stop it.
+The song keeps playing after you leave the screen. It stops when the screen
+goes off or the creature goes to bed, and a battle replaces it with the battle
+theme. Swipe left/right to page; swipe up/down to go back. Locked songs show
+what unlocks them (see [the numbers](#jukebox-songs-and-listening)).
+
+| Jukebox | Locked songs | Dancing |
+|---|---|---|
+| <img src="docs/screens/jukebox.png" width="240"> | <img src="docs/screens/jukebox2.png" width="240"> | <img src="docs/screens/dance.png" width="240"> |
+
 ### Settings
 
 Tap the name, then **Settings**. It is five swipeable pages (Time, Volume, Brightness, Language, About); swipe
@@ -218,6 +231,10 @@ Needs drain at half the old rate: the full step lands every 2nd minute (`DRAIN_E
   bonus of +1 per 3 clean passes (max +3). A mistimed tap scores nothing, breaks the
   streak and locks taps for 0.32 s, so mashing earns nothing; a pass with no tap also
   breaks the streak. Tapping the top quits and keeps what was earned.
+- 🎵 **Jukebox:** an awake creature dances while a song plays, and every
+  **5 minutes** of listening gives **+3 JOY**, up to **30 minutes a day**
+  (**+18 JOY** a day at most). The daily allowance resets with the clock's day.
+  The song only counts if you can hear it: sound on and volume above 0.
 - 🫧 **Bath:** clears poops, HYG → 100.
 - 👆 **Pet it:** +5 JOY + bond.
 - 🌙 **Sleep:** rest — ENE **+6/min**, needs drain ~**4× slower** with floors
@@ -229,6 +246,27 @@ Needs drain at half the old rate: the full step lands every 2nd minute (`DRAIN_E
   evening is deliberately outside the window -- a six-hour night is the only part
   of the day you are not expected to be around. The light
   button beats both: a creature you sent to bed stays there.
+
+### Jukebox songs and listening
+
+Songs unlock for the player, not the creature. Once unlocked, a song stays
+unlocked through every new egg, even if what earned it lapses later (today's
+steps, for example).
+
+| Song | Unlocks when |
+|---|---|
+| Title Screen | always |
+| Pallet Town | your first creature hatches |
+| Route 1 | you walk 1,000 steps in one day |
+| Pokémon Center | your best care streak reaches 3 days |
+| Lavender Town | a creature leaves you (farewell, release or runaway) |
+| Wild Battle | 8 gym badges (easy and hard both count) |
+| Trainer Battle | 4 gym badges |
+| Gym Leader | your first gym badge |
+| Victory | your first gym badge |
+
+Listening: **+3 JOY per 5 minutes** awake with a song audible, capped at **30
+minutes a day** (+18). Asleep, the song stops, so there is no listening joy.
 
 ### Eggs & who you get (spawn odds)
 - **First ever pet:** you pick a starter — **Bulbasaur / Charmander / Squirtle**.
@@ -790,6 +828,8 @@ runaway-ready state) · `WIPE` (factory reset → new game) · `BEEP` (audio tes
 `REG` (Pokédex) · `EGGS` (simulate 20 eggs) · `GAL` (gallery) · `CAREDAY` ·
 `PARTY` / `PARTY <dex>` / `PARTY CLEAR` (inspect and fill the party) ·
 `MISS <n>` (set care mistakes; 0 forgives the evolution delay) · `EVOPEN <n>` (set/clear the inherited early-retire evolution delay) · `TR <atk> <def> <spd>` (set training, clamped to the IV ceiling) · `EGGSET <dex>` (change the species in the waiting egg without hatching it) ·
+`MUSIC` / `MUSIC <n>` / `MUSIC OFF` (list, loop or stop a tune) · `TUNES` / `TUNES ALL`
+(the jukebox's unlocks; ALL unlocks every song) ·
 `STEPS <n>` (set today's step count) · `BIOME <0-6>` (force a scenery biome) · `TIME <epoch>` / `RTCSET <epoch>` · `HEALTH` (uptime + heap for the soak test) ·
 `LS` / `PUT` (SD files).
 
