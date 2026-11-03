@@ -125,13 +125,14 @@ void Pet::syncClock(uint32_t nowEpoch) {
     }
     if (sleeping) {  // rest: falls slowly and with a floor, same as live
       energy = clamp100(energy + 6);
-      if (ageMinutes % 2 == 0) {
+      if (ageMinutes % (2 * DRAIN_EVERY) == 0) {
         fullness = dropTo(fullness, 1, 30);
         joy = dropTo(joy, 1, 35);
       }
-      if (ageMinutes % 3 == 0) hygiene = dropTo(hygiene, 1, 45);
+      if (ageMinutes % (3 * DRAIN_EVERY) == 0) hygiene = dropTo(hygiene, 1, 45);
       continue;
     }
+    if (i % DRAIN_EVERY) continue;   // awake needs fall at 1/DRAIN_EVERY of the old rate
     fullness = dropTo(fullness, 2, 15);
     energy = dropTo(energy, 1, 15);
     hygiene = dropTo(hygiene, 1, 15);
@@ -139,7 +140,7 @@ void Pet::syncClock(uint32_t nowEpoch) {
   }
   if (!isEgg()) {
     if (!sleeping) {  // does not get dirty while sleeping
-      uint8_t p = poops + mins / 240;
+      uint8_t p = poops + mins / (240 * DRAIN_EVERY);
       poops = p > 3 ? 3 : p;
     }
     // evolution is NOT applied offline: it is left ready and the user triggers it
@@ -185,11 +186,11 @@ void Pet::tick() {
   if (sleeping) {
     energy = clamp100(energy + 6);
     if (weight > 0 && ageMinutes % 3 == 0) weight--;
-    if (ageMinutes % 2 == 0) {                 // ~4x slower than awake
+    if (ageMinutes % (2 * DRAIN_EVERY) == 0) {  // ~4x slower than awake
       fullness = dropTo(fullness, 1, 30);
       joy = dropTo(joy, 1, 35);
     }
-    if (ageMinutes % 3 == 0) hygiene = dropTo(hygiene, 1, 45);
+    if (ageMinutes % (3 * DRAIN_EVERY) == 0) hygiene = dropTo(hygiene, 1, 45);
     defTick(true);  // resting is also wellbeing: it counts toward DEF
     checkMedals();  // can still cross a level by age while asleep
     if (++ticksSinceSave >= 5) pendingSave = true;
@@ -198,21 +199,28 @@ void Pet::tick() {
 
   if (ageMinutes % MINUTES_PER_LEVEL == 0) sfxPlay(SFX_LEVEL);  // levelled up (awake)
 
-  fullness = clamp100(fullness - 2);
-  energy = clamp100(energy - 1);
-  if (fullness > 40 && poops < 3 && random(100) < 15) poops++;
+  // the needs drain once every DRAIN_EVERY ticks; weight, DEF and the checks
+  // below keep their own per-tick pace
+  bool drainNow = (++drainPhase % DRAIN_EVERY) == 0;
+  if (drainNow) {
+    fullness = clamp100(fullness - 2);
+    energy = clamp100(energy - 1);
+    if (fullness > 40 && poops < 3 && random(100) < 15) poops++;
 
-  hygiene = clamp100(hygiene - 1 - 4 * poops);
-  // overweight makes it lazy: energy falls twice as fast
-  if (weight > 50) energy = clamp100(energy - 1);
+    hygiene = clamp100(hygiene - 1 - 4 * poops);
+    // overweight makes it lazy: energy falls twice as fast
+    if (weight > 50) energy = clamp100(energy - 1);
+  }
   if (weight > 0 && ageMinutes % 3 == 0) weight--;
 
   defTick(false);  // calm forges defence
 
-  int dJoy = -1;
-  if (fullness < 30) dJoy -= 2;
-  if (hygiene < 30) dJoy -= 2;
-  joy = clamp100(joy + dJoy);
+  if (drainNow) {
+    int dJoy = -1;
+    if (fullness < 30) dJoy -= 2;
+    if (hygiene < 30) dJoy -= 2;
+    joy = clamp100(joy + dJoy);
+  }
 
   // Mistake: leaving a stat in the gutter counts as a care
   // error (with a cooldown so the same mistake is not counted every minute)
@@ -228,7 +236,7 @@ void Pet::tick() {
   checkMedals();  // the user triggers evolution (canEvolveNow + tap), not the tick
   checkLearnGates();
 
-  // total neglect: with EVERYTHING at zero for an hour it becomes ready to run away;
+  // total neglect: with EVERYTHING at zero for 3 hours it becomes ready to run away;
   // it does NOT leave by itself, the user triggers it with the button (sad ending, witnessed)
   if (inTotalNeglect()) {
     if (neglectTicks < RUNAWAY_TICKS) neglectTicks++;
@@ -527,6 +535,7 @@ void Pet::addSteps(uint32_t n) {
   if (d != stepDay) {
     stepDay = d;
     stepCount = 0;
+    stepClaim = 0;            // a new day: every milestone can pay again
     pendingSave = true;
   }
   stepCount += n;
@@ -538,7 +547,38 @@ void Pet::addSteps(uint32_t n) {
   }
 }
 
+uint8_t Pet::claimSteps() {
+  if (isEgg() || ceremony != CER_NONE || stepDay != today()) return 0;
+  uint8_t top = 0;
+  for (uint8_t i = 0; i < STEP_MS_COUNT; i++) {
+    if ((stepClaim & (1 << i)) || stepCount < STEP_MS[i]) continue;
+    stepClaim |= 1 << i;
+    top = i + 1;
+    if (i == 0) {                            // a snack
+      fullness = clamp100(fullness + 15);
+      joy = clamp100(joy + 10);
+    } else if (i == 1) {                     // a good walk
+      joy = clamp100(joy + 20);
+      energy = clamp100(energy + 10);
+      addBond(3);
+    } else {                                 // the daily goal
+      uint8_t which;
+      rewardTraining(3, which);
+      joy = clamp100(joy + 30);
+      addBond(5);
+    }
+  }
+  if (top) {
+    heartUntil = millis() + HEART_MS;
+    stepToastUntil = millis() + 5000;
+    stepToastSteps = STEP_MS[top - 1];
+    save();
+  }
+  return top;
+}
+
 void Pet::setStepsToday(uint32_t n) {
+  if (stepDay != today()) stepClaim = 0;
   stepDay = today();
   stepCount = n > STEP_MAX ? STEP_MAX : n;
   stepsUnsaved = 0;
@@ -1071,8 +1111,8 @@ uint8_t Pet::playResult(uint8_t score) {
   // Keeping the ball on the defensive stat fits it: you are stopping something
   // from getting past you.
   uint8_t before = trDef;
-  uint8_t gain = score / 2;
-  if (gain > 18) gain = 18;          // the same per-session ceiling as the bag
+  uint16_t g16 = (uint16_t)score * 3 / 5;   // 5 points = 3 training points
+  uint8_t gain = g16 > 18 ? 18 : (uint8_t)g16;   // the same per-session ceiling as the bag
   uint16_t v = (uint16_t)trDef + gain;
   trDef = v > trMaxDef() ? trMaxDef() : (uint8_t)v;
   gain = trDef - before;
@@ -1142,7 +1182,7 @@ uint8_t Pet::trainSpeed(uint16_t hits) {
 
 uint8_t Pet::trainStrength(uint16_t hits) {
   if (ceremony != CER_NONE || isEgg()) return 0;
-  uint8_t gain = hits / 4;          // ~4 hits = 1 training point
+  uint8_t gain = hits / 3;          // 3 points = 1 training point
   if (gain > 18) gain = 18;         // per-session cap: ATK is forged slowly
   uint8_t before = trAtk;
   uint8_t v = trAtk + gain;
@@ -1325,6 +1365,7 @@ void Pet::save() {
   prefs.putUInt("cday", lastCareDay);
   prefs.putUInt("stps", stepCount);
   prefs.putUInt("sday", stepDay);
+  prefs.putUChar("stpc", stepClaim);
   prefs.putUChar("bond", bond);
   prefs.putUShort("medal", medals);
   prefs.putUShort("tmedal", totalMedals);
@@ -1393,6 +1434,7 @@ void Pet::load() {
   lastCareDay = prefs.getUInt("cday", 0);
   stepCount = prefs.getUInt("stps", 0);
   stepDay = prefs.getUInt("sday", 0);
+  stepClaim = prefs.getUChar("stpc", 0);
   bond = prefs.getUChar("bond", 0);
   medals = prefs.getUShort("medal", 0);
   totalMedals = prefs.getUShort("tmedal", 0);

@@ -3,7 +3,7 @@
 [![Flash in browser](https://img.shields.io/badge/flash-in%20browser-FF6B00?logo=googlechrome&logoColor=white)](https://crenberries428.github.io/TamaPoke/web/)
 [![MakerWorld](https://img.shields.io/badge/MakerWorld-3D%20case-00AE42?logo=bambulab&logoColor=white)](https://makerworld.com/es/models/2937822-tamapoke-a-pokemon-pokeball-tamagotchi)
 ![Board](https://img.shields.io/badge/board-ESP32--S3%20round%20AMOLED-E7352C?logo=espressif&logoColor=white)
-![Firmware](https://img.shields.io/badge/firmware-v3.14-8A2BE2)
+![Firmware](https://img.shields.io/badge/firmware-v3.27-8A2BE2)
 ![Code](https://img.shields.io/badge/code-MIT-blue)
 ![Languages](https://img.shields.io/badge/languages-8-FFCB05)
 [![Stars](https://img.shields.io/github/stars/crenberries428/TamaPoke?style=flat&logo=github&color=yellow)](https://github.com/crenberries428/TamaPoke/stargazers)
@@ -61,10 +61,25 @@ region's answer, so it cannot be flipped to farm a legendary.
 
 **Steps.** The board's QMI8658 accelerometer counts your steps (`steps.cpp`, in
 any orientation, screen on or off) and the home screen shows today's total on a
-plate curved along the left edge, digits stacked down it. The arc on the rim fills
+plate curved along the left edge: a pair of footprints, toes pointing out to the edge, and then the number run
+clockwise along its arc, each character turned to follow the curve. The arc on the rim fills
 toward 10,000 and turns gold when you get there. The count resets at midnight by
-the RTC. It is a counter only: it changes nothing in the game. The threshold is
-tuned against synthetic gait in `steps_test`, not yet against a person walking.
+the RTC. The threshold is tuned against synthetic gait in `steps_test`, not yet
+against a person walking.
+
+**Walking pays the pet.** Three milestones a day, each paid **once** (it is
+remembered across a reboot, and starts over at midnight):
+
+| Steps | Reward |
+|---|---|
+| 2,500 | a snack: +15 FOOD, +10 JOY |
+| 5,000 | +20 JOY, +10 ENE, +3 bond |
+| 10,000 (the goal) | **+3 training** into a stat with headroom (never past its IV ceiling), +30 JOY, +5 bond |
+
+A heart rises, a sound plays and the status line reads `2500 STEPS!` for a few
+seconds. Nothing pays while an egg waits, and a milestone you reach then pays as
+soon as something hatches. The daily bond cap still applies. `STEPS <n>` on the
+console sets today's count, so a milestone can be tested without walking.
 
 ### Day, dusk, night
 
@@ -139,7 +154,7 @@ Running on hardware. Implemented: 386 species + shinies animated from microSD, f
 life cycle (egg by rarity → evolution → farewell/release/runaway, each gated
 behind a decision dialog), bred-Pokédex with gallery, battle stats (IVs +
 training), retention hooks (streak / bond / medals / name), biome + real-time
-backgrounds, ball minigame, training bag, animated bath, RTC with offline
+backgrounds, brace-and-block minigame, training bag, animated bath, RTC with offline
 progression, battery (AXP2101) and PWR button, anti-burn-in dimming,
 **sound (ES8311) with a volume slider**, adjustable **brightness**, **8 UI languages (English default)**, **starter choice on
 first run**, and a one-click **web installer**.
@@ -166,12 +181,14 @@ While **awake**, per minute:
 
 | Stat | Drain/min | Notes |
 |---|---|---|
-| FOOD | −2 | |
-| ENE | −1 | −1 extra if overweight (weight > 50 → sluggish) |
-| HYG | −1 | **−4 more per poop** on screen (max 3 poops) |
-| JOY | −1 | **−2 extra** if FOOD < 30, **−2 extra** if HYG < 30 |
+| FOOD | −1 | (−2 every 2nd minute) |
+| ENE | −0.5 | −0.5 extra if overweight (weight > 50 → sluggish) |
+| HYG | −0.5 | **−2 more per poop** on screen (max 3 poops) |
+| JOY | −0.5 | **−1 extra** if FOOD < 30, **−1 extra** if HYG < 30 |
 
-- ~**15 %/min** chance to poop (only if FOOD > 40). Poops tank hygiene fast.
+Needs drain at half the old rate: the full step lands every 2nd minute (`DRAIN_EVERY`).
+
+- ~**7.5 %/min** chance to poop (only if FOOD > 40). Poops tank hygiene fast.
 - **Care slip-up** = letting any stat hit **≤ 10** (60-min cooldown so it counts once).
   Each slip-up **delays evolution by 1 level** and cools the bond by 1.
 
@@ -179,12 +196,28 @@ While **awake**, per minute:
 - 🍎 **Berry** (3 flavors): +25 FOOD. Each species has a **hidden favorite flavor**
   → +35 FOOD, +10 JOY, ♥, bond, and it gets revealed.
 - 🍬 **Candy:** +10 FOOD, +12 JOY, but **+12 weight** (fattening).
-- ⚽ **Play / minigame:** **+5 JOY, plus 2 per rally** (max +35), −ENE, burns
-  weight. Pure happiness — it trains nothing, so playing is never a stat grind.
-  Leaving early keeps what you earned.
-- 🎯 **Reaction test:** a target appears, tap it before it shrinks away. Trains
-  **SPEED**; the window tightens as you go.
-- 🥊 **Training bag:** trains **STRENGTH** (~4 hits = 1 pt, cap +18/session), tires it.
+- 🛡️ **Brace and block (minigame):** a 20 s fight that trains **DEFENSE** (5 points = 3
+  training pts, cap +18/session) and gives **+5 JOY, plus 2 per point** (max +35), −ENE,
+  burns weight. Orbs telegraph from the left, right or above along a dotted path; tap
+  that third of the panel to raise a shield, which holds 0.32 s and can only go up every
+  0.24 s. A block is **2 pts**, a **parry** (shield raised within 90 ms of impact) is
+  **3**, plus +1 per 4 clean blocks in a row (max +2). From halfway in, some attacks come
+  (about 1 in 4) as a pair from two sides, 0.38 s apart. The pace climbs (flight time
+  1.25 s → 1.0 s). A hit costs a heart, four end the run. Tapping the top quits and keeps what was earned.
+- 🎯 **Dodge run:** a 15 s run that trains **SPEED**. Rows of boulders come down three
+  lanes; tap a third of the panel to send the pet to that lane. Every row leaves at
+  least one lane open. Each row dodged is **3 pts**, with a streak bonus of +1 per 3
+  clean rows (max +2). The pace climbs from 0.16 to 0.30 px/ms and the gap between rows
+  shrinks from ~1.3 s to ~0.95 s; about 70 % of rows block a single lane. A crash stuns the pet for 0.4 s (no lane changes,
+  and rows landing on it count for nothing) and breaks the streak. 2 points = 1 training
+  pt, cap +18/session (about 9 clean rows).
+- 🥊 **Training bag:** a 10 s timing game that trains **STRENGTH** (3 points = 1 training
+  pt, cap +18/session), and tires it. The bag swings like a pendulum, speeding up from
+  a 1.5 s to a 1.0 s period, and only a tap as it crosses the line scores: **PERFECT**
+  (within 50 ms of the line) = 5 pts, **GOOD** (within 120 ms) = 3 pts, plus a streak
+  bonus of +1 per 3 clean passes (max +3). A mistimed tap scores nothing, breaks the
+  streak and locks taps for 0.32 s, so mashing earns nothing; a pass with no tap also
+  breaks the streak. Tapping the top quits and keeps what was earned.
 - 🫧 **Bath:** clears poops, HYG → 100.
 - 👆 **Pet it:** +5 JOY + bond.
 - 🌙 **Sleep:** rest — ENE **+6/min**, needs drain ~**4× slower** with floors
@@ -319,10 +352,9 @@ the games: **they cap training.**
   pattern and a shiny was never mediocre.
 - IVs are shown on the Battle page of the stat card; a perfect 31 is highlighted.
 
-Training: **STRENGTH** ← the bag, **SPEED** ← the reaction test, **DEFENSE** ← the
-ball game (and still 1 h of wellbeing passively). **VIT** can't be trained. All three
-live in the training menu now; the ball moved off the home row when it became
-defence's trainer.
+Training: **STRENGTH** ← the bag, **SPEED** ← the dodge run, **DEFENSE** ← the
+brace-and-block game (and still 1 h of wellbeing passively). **VIT** can't be trained.
+All three live in the training menu now.
 
 **TMs unlock at level 40**, all of them, and nothing before. A TM carries no level
 requirement in the data — true of the games, wrong here, because a young creature
@@ -490,7 +522,7 @@ If one bottoms out it counts as a *slip-up*.
 **Buttons (bottom arc, icons):**
 - 🍎 **Feed** → food menu: 3 berries (each species has a hidden favourite that
   gives a bonus) and a candy (+happiness but it fattens; weight makes it sluggish).
-- ⚽ **Play** → the pokeball minigame (joy only).
+- ⚽ **Play** → the brace-and-block minigame (trains DEFENSE, and joy).
 - 🌙 **Light** → sleep/wake (recovers energy, dims the screen). While asleep,
   needs decay much slower (rest).
 - 🫧 **Bath** → a foam scene that cleans up the poops.
@@ -521,7 +553,7 @@ witness it), each opening a two-option dialog:
 - **Farewell** (gold button, final form + 3 days): *Say goodbye* (warm farewell,
   rising hearts → new egg) or *Stay together* (keep your companion; re-offered in
   a day). Tension: a maxed-out friend vs. completing the Pokédex.
-- **Runaway** (dark button, total neglect for 1 h): a somber "feels abandoned"
+- **Runaway** (dark button, total neglect for 3 h): a somber "feels abandoned"
   ending in the rain — caring for the creature cancels it.
 
   **It does not ask, and that is the point** -- a creature you have to authorise
@@ -600,9 +632,10 @@ Typing is shown on the Battle page of the stat card. *(Battles: on the roadmap.)
 
 Each creature has ATK/DEF/SPD/VIT = **base stat** + level + **IV** (0–31, rolled
 at hatch, `IV × level/100` exactly as in the real games) + **training**:
-- SPEED ← the **reaction test** (~2 reactions = 1 pt, cap +18 per session)
-- DEFENSE ← accumulated wellbeing (1 h resting or well-cared = +1)
-- STRENGTH ← the training bag (~4 hits = 1 pt, cap +18 per session)
+- SPEED ← the **dodge run** (2 points = 1 pt, cap +18 per session)
+- DEFENSE ← the **brace-and-block game** (5 points = 3 pts, cap +18 per session), and
+  accumulated wellbeing (1 h resting or well-cared = +1)
+- STRENGTH ← the training bag (timed hits; 3 points = 1 pt, cap +18 per session)
 - VIT (vitality, from the base HP stat) — not trainable
 
 ### Moves
@@ -658,7 +691,7 @@ always pays off.
 
 The life cycle lasts **3 days** of play. Three endings (all leave a new egg):
 **farewell** (final form + 3 days), **release** (long press), **runaway** (all 4
-bars at zero for 1 h). Each bred species is recorded in the **bred Pokédex**
+bars at zero for 3 h). Each bred species is recorded in the **bred Pokédex**
 (normal and shiny separately).
 
 The egg rolls rarity over the ~79 base forms (47 common / 27 rare / 5 legendary),
@@ -756,6 +789,7 @@ legendary/shiny IV guarantees, which apply at hatch) ·
 runaway-ready state) · `WIPE` (factory reset → new game) · `BEEP` (audio test) ·
 `REG` (Pokédex) · `EGGS` (simulate 20 eggs) · `GAL` (gallery) · `CAREDAY` ·
 `PARTY` / `PARTY <dex>` / `PARTY CLEAR` (inspect and fill the party) ·
+`MISS <n>` (set care mistakes; 0 forgives the evolution delay) · `EVOPEN <n>` (set/clear the inherited early-retire evolution delay) · `TR <atk> <def> <spd>` (set training, clamped to the IV ceiling) · `EGGSET <dex>` (change the species in the waiting egg without hatching it) ·
 `STEPS <n>` (set today's step count) · `BIOME <0-6>` (force a scenery biome) · `TIME <epoch>` / `RTCSET <epoch>` · `HEALTH` (uptime + heap for the soak test) ·
 `LS` / `PUT` (SD files).
 

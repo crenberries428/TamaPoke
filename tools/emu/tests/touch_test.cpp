@@ -158,7 +158,7 @@ int main(int argc, char **argv) {
   click(tbx, tby);
   click(233, 242);                       // row 1 == SPEED == TRAIN_ROW_Y(1)+28
   if (!spdOpen) { printf("FAIL: SPEED row did not start the reaction test\n"); return 1; }
-  printf("PASS: SPEED routes to the reaction test\n");
+  printf("PASS: SPEED routes to the dodge run\n");
   spdOpen = false;
 
   click(tbx, tby);

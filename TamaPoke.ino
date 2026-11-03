@@ -41,7 +41,7 @@
 
 // Version del firmware. Subir este numero en cada release (y manifest.json para
 // el instalador web). Se muestra en la pantalla de ajustes y por serie al arrancar.
-#define FW_VERSION "3.14"
+#define FW_VERSION "3.27"
 #define PET_CRY_GAP_MS 6000  // minimum time between cries from petting
 
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(
@@ -189,26 +189,32 @@ bool bathPending = false;
 struct { int16_t x, y; uint8_t r, ph; } bubbles[14];
 uint32_t feedMenuUntil = 0;   // food picker open until this millis
 
-// "taps" minigame: keep the pokeball in the air
+// brace and block (trains DEFENCE): attacks telegraph from three sides and a
+// shield tapped up just in time stops them. gameScore is what trains and what the
+// record keeps; gameMisses is the hearts lost.
 bool gameOpen = false;
 uint32_t gameOverUntil = 0;
-// The ball game used to run until you missed three times or walked away, so a
-// session had no length and the reward no shape. The bag is 10 s and the
-// reaction test 15 s; this sits between them, and whichever comes first --
-// the clock or three misses -- ends it.
 #define GAME_MS 20000UL
 uint32_t gameUntil = 0;
-float ballX, ballY, ballVX, ballVY, gamePetX;
-uint8_t gameScore, gameMisses;
-float hitX, hitY;             // last hit (impact ring)
-uint32_t hitTime = 0;
+uint8_t gameScore, gameMisses, gameGain;
 bool gameNewHi = false;
 
 // punching bag (trains strength)
 bool sackOpen = false;
 uint32_t sackUntil = 0, sackOverUntil = 0;
-uint16_t sackHits = 0;
-float sackShake = 0;
+// The bag swings like a pendulum and a hit only counts as it passes the line
+// under the pet, so mashing earns nothing. sackPts is what trains (and what the
+// record keeps); sackHits is how many landed.
+uint16_t sackHits = 0, sackPts = 0;
+uint8_t sackCombo = 0;
+float sackPhase = 0;          // pendulum angle = SACK_THETA * sin(phase)
+uint32_t sackLastMs = 0;      // last time the phase was advanced
+int16_t sackNextK = 0;        // first line crossing not yet resolved
+int16_t sackLastK = -1;       // last crossing a hit was scored on
+uint32_t sackLockUntil = 0;   // taps ignored after a mistimed one
+uint32_t sackFbAt = 0;        // when the last tap landed, for its feedback
+uint8_t sackFbGrade = 0;      // 0 miss, 1 good, 2 perfect
+uint8_t sackFbPts = 0;
 uint8_t sackGain = 0;
 bool sackNewHi = false;
 
@@ -305,11 +311,11 @@ uint32_t btlWinUntil = 0;   // the win screen is up
 // "no gating, attrition is the gate" rule -- with both ladders level-capped,
 // nothing stopped you opening with Lance and simply losing, which read as a
 // dead end rather than a challenge.
-// reaction test (trains SPEED)
+// dodge run (trains SPEED). spdPts is what trains and what the record keeps;
+// spdHits is how many rows were dodged. The rest of its state sits with the game.
 bool spdOpen = false;
-uint32_t spdUntil = 0, spdOverUntil = 0, spdBorn = 0;
-int16_t spdX = 0, spdY = 0;
-uint16_t spdHits = 0, spdMisses = 0;
+uint32_t spdUntil = 0, spdOverUntil = 0;
+uint16_t spdHits = 0, spdPts = 0;
 uint8_t spdGain = 0;
 bool spdNewHi = false;
 
@@ -816,6 +822,8 @@ void loop() {
   static StepDetector stepper;
   float ax, ay, az;
   if (imuReadAccel(ax, ay, az)) pet.addSteps(stepper.feed(ax, ay, az, now));
+  uint8_t stepMs = pet.claimSteps();   // a milestone reached pays once a day
+  if (stepMs) sfxPlay(stepMs >= STEP_MS_COUNT ? SFX_MEDAL : SFX_HEART);
 
   // The link is pumped here rather than from the LAN screen, because it has to
   // keep running through the battle too: linkNowPoll() drains what the radio
@@ -1024,6 +1032,15 @@ void handleSerial() {
     pet.careMistakes = (uint8_t)m;
     pet.saveNow();
     Serial.printf("miss=%u\n", pet.careMistakes);
+  } else if (line.startsWith("EVOPEN ")) {
+    // EVOPEN <n>: sets the inherited early-retire evolution delay (levels).
+    // EVOPEN 0 clears the "evolves a day later" note on the card.
+    long n = line.substring(7).toInt();
+    if (n < 0) n = 0;
+    if (n > 255) n = 255;
+    pet.dbgSetEvoPenalty((uint8_t)n);
+    pet.saveNow();
+    Serial.printf("evopen=%u\n", pet.evoPenalty());
   } else if (line.startsWith("TR ")) {
     // TR <atk> <def> <spe>: sets the TRAINING (this game's EVs), for testing a
     // fully-raised creature without playing the minigames for an hour. Each is
@@ -1085,6 +1102,12 @@ void handleSerial() {
       Serial.printf("%d:%s(r%u) ", d, DEX_TBL[d].name, DEX_TBL[d].rarity);
     }
     Serial.println();
+    Serial.println("DONE");
+  } else if (line.startsWith("EGGSET ")) {
+    // EGGSET <dex>: change the species inside the waiting egg, no hatch.
+    int dex = line.substring(7).toInt();
+    pet.dbgSetEggTarget(dex);
+    Serial.printf("egg holds %d\n", pet.eggPeek());
     Serial.println("DONE");
   } else if (line.startsWith("EGG ")) {
     // EGG <dex> [shiny]: hatch a chosen species right now. The legendary and
@@ -1192,6 +1215,23 @@ void handleSerial() {
     Serial.println("DONE");
     delay(100);
     ESP.restart();
+  } else if (line.startsWith("PARTYMAX ")) {
+    // PARTYMAX <dex>: every banked member of that species to MAX_LEVEL with
+    // its training at the ceiling its IVs allow (trMaxFor), as TR does live.
+    int d = line.substring(9).toInt();
+    int hit = 0;
+    for (int i = 0; i < PARTY_SLOTS; i++) {
+      PartyMon &m = party.slots[i];
+      if (m.empty() || m.dex != d) continue;
+      m.level = MAX_LEVEL;
+      m.trAtk = Pet::trMaxFor(m.ivAtk);
+      m.trDef = Pet::trMaxFor(m.ivDef);
+      m.trSpe = Pet::trMaxFor(m.ivSpe);
+      hit++;
+    }
+    if (hit) party.save();
+    Serial.printf("maxed %d\n", hit);
+    Serial.println("DONE");
   } else if (line.startsWith("PARTY")) {
     // PARTY          list the party
     // PARTY <dex>    bank a level-50 specimen (fills slots up for testing)
@@ -3980,7 +4020,54 @@ void render() {
   gfx->flush();
 }
 
-// ---------- minigame: taps with the pokeball ----------
+// ---------- minigame: brace and block (trains DEFENCE) ----------
+// The pet stands in the middle and attacks come in from the left, the right or
+// above, each telegraphed by a dotted path and an orb that speeds up as it
+// arrives. Tap the third of the panel it comes from to raise the shield there:
+// it holds for BRACE_SHIELD_MS, so a block is anything that lands inside that
+// window and a PARRY is a shield raised in the last BRACE_PERF_MS before impact.
+// A shield can only go up every BRACE_COOL_MS, so mashing leaves most
+// directions open. Four hits end the run, otherwise the clock does.
+
+#define BRACE_PET_Y 316        // the pet's centre
+#define BRACE_SHIELD_MS 320    // a raised shield holds this long
+#define BRACE_COOL_MS 240      // and the next one cannot go up sooner
+#define BRACE_PERF_MS 90       // raised this close to impact = parry
+#define BRACE_HEARTS 4
+#define BRACE_MAXATK 4
+enum { BZ_LEFT = 0, BZ_RIGHT, BZ_TOP, BZ_COUNT };
+
+struct BraceAtk { uint32_t impact; uint16_t flight; uint8_t zone; bool live; };
+BraceAtk braceAtk[BRACE_MAXATK];
+uint8_t braceZone[2] = { 255, 255 };         // the last two shields raised
+uint32_t braceRaisedAt[2] = { 0, 0 };
+uint32_t braceCoolUntil = 0, braceNextSpawn = 0, braceFbAt = 0;
+uint8_t braceStreak = 0, braceFb = 0, braceFbZone = 0, braceFbPts = 0;  // fb: 1 block 2 parry 3 hit
+
+static float braceProgress(uint32_t now) {
+  float p = 1.0f - (float)(gameUntil > now ? gameUntil - now : 0) / GAME_MS;
+  return p < 0 ? 0 : (p > 1 ? 1 : p);
+}
+
+void braceSpawn(uint32_t now) {
+  float p = braceProgress(now);
+  uint16_t flight = (uint16_t)(1250 - 250 * p);
+  uint8_t z = random(BZ_COUNT);
+  for (int i = 0; i < BRACE_MAXATK; i++) {
+    if (braceAtk[i].live) continue;
+    braceAtk[i] = { now + flight, flight, z, true };
+    // later in the run some come as a pair, from two different sides
+    if (p > 0.5f && random(100) < 25) {
+      for (int j = 0; j < BRACE_MAXATK; j++) {
+        if (braceAtk[j].live) continue;
+        braceAtk[j] = { now + flight + 380, (uint16_t)(flight + 380), (uint8_t)((z + 1 + random(2)) % BZ_COUNT), true };
+        break;
+      }
+    }
+    break;
+  }
+  braceNextSpawn = now + (uint32_t)(1700 - 500 * p) + random(250);
+}
 
 void startGame() {
   if (pet.isEgg() || pet.sleeping || pet.ceremony) return;
@@ -3989,19 +4076,16 @@ void startGame() {
   gameUntil = millis() + GAME_MS;
   gameScore = 0;
   gameMisses = 0;
+  gameGain = 0;
   gameNewHi = false;
-  hitTime = 0;
-  gamePetX = 233;
-  respawnBall();
-}
-
-void respawnBall() {
-  ballX = 150 + random(166);
-  ballY = 96;
-  float sp = 1.6f + gameScore * 0.05f;  // livelier as you progress
-  if (sp > 4.0f) sp = 4.0f;
-  ballVX = random(2) ? sp : -sp;
-  ballVY = 0;
+  for (int i = 0; i < BRACE_MAXATK; i++) braceAtk[i].live = false;
+  braceZone[0] = braceZone[1] = 255;
+  braceRaisedAt[0] = braceRaisedAt[1] = 0;
+  braceCoolUntil = 0;
+  braceStreak = 0;
+  braceFb = 0;
+  braceFbAt = 0;
+  braceNextSpawn = millis() + 1000;
 }
 
 // Leaving a minigame early banks what was actually earned rather than voiding
@@ -4014,104 +4098,209 @@ void leaveGame() {
   gameOpen = false;
 }
 void leaveSack() {
-  if (!sackOverUntil) pet.trainStrength(sackHits);
+  if (!sackOverUntil) pet.trainStrength(sackPts);
   sackOpen = false;
 }
 void leaveSpeed() {
-  if (!spdOverUntil) pet.trainSpeed(spdHits);
+  if (!spdOverUntil) pet.trainSpeed(spdPts);
   spdOpen = false;
+}
+
+// raises the shield in `zone`, unless the last one is still cooling down
+void braceRaise(uint8_t zone, uint32_t now) {
+  if (gameOverUntil || now >= gameUntil || now < braceCoolUntil) return;
+  braceZone[1] = braceZone[0];
+  braceRaisedAt[1] = braceRaisedAt[0];
+  braceZone[0] = zone;
+  braceRaisedAt[0] = now;
+  braceCoolUntil = now + BRACE_COOL_MS;
+  sfxPlay(SFX_TAP);
 }
 
 void gameTap(int16_t x, int16_t y) {
   if (gameOverUntil) return;
-  // The ball is checked BEFORE the quit strip. The ball bounces inside a circle
-  // of radius 205 about the centre, so it reaches y=28 -- well inside the y<72
-  // header. Reaching up to hit a high ball used to abandon the game instead,
-  // silently forfeiting the score, the speed training and the record.
-  float dx = ballX - x, dy = ballY - y;
-  bool onBall = (dx * dx + dy * dy < 74 * 74);
-  if (!onBall && y < 72) {  // tap the header = quit, keeping what was earned
+  if (y < 72) {  // tap the header = quit, keeping what was earned
     leaveGame();
     return;
   }
-  if (onBall) {  // ball hit!
-    gameScore++;
-    sfxPlay(SFX_PLAY);
-    // softer hit: moderate impulse that grows slowly with the score
-    float lift = 6.6f + (gameScore > 16 ? 3.5f : gameScore * 0.22f);
-    ballVY = -lift;
-    ballVX += dx * 0.12f;
-    if (ballVX > 6.5f) ballVX = 6.5f;
-    if (ballVX < -6.5f) ballVX = -6.5f;
-    hitX = ballX;
-    hitY = ballY;
-    hitTime = millis();
-  }
+  uint8_t zone = x < CX - 60 ? BZ_LEFT : (x > CX + 60 ? BZ_RIGHT : BZ_TOP);
+  braceRaise(zone, millis());
 }
 
-void stepGame() {
-  float grav = 0.40f + gameScore * 0.013f;  // falls a little faster each time
-  if (grav > 0.80f) grav = 0.80f;
-  ballVY += grav;
-  ballX += ballVX;
-  ballY += ballVY;
-  // bounce off the circular wall
-  float dx = ballX - CX, dy = ballY - CY;
-  float d = sqrtf(dx * dx + dy * dy);
-  if (d > 205) {
-    float nx = dx / d, ny = dy / d;
-    float dot = ballVX * nx + ballVY * ny;
-    if (dot > 0) {
-      ballVX = (ballVX - 2 * dot * nx) * 0.85f;
-      ballVY = (ballVY - 2 * dot * ny) * 0.85f;
+static void gameFinish(uint32_t now) {
+  gameNewHi = (gameScore > pet.gameHi);
+  gameGain = pet.playResult(gameScore);   // trains DEF, updates the record, happiness
+  sfxPlay(gameNewHi && gameScore > 0 ? SFX_MEDAL : SFX_LEVEL);
+  gameOverUntil = now + 4000;
+}
+
+// one step of the fight to time `now`: spawn, and resolve every attack whose
+// impact has passed. The renderer calls this; so does the test.
+void stepGame(uint32_t now) {
+  if (gameOverUntil) return;
+  if (now >= braceNextSpawn && now < gameUntil) braceSpawn(now);
+  for (int i = 0; i < BRACE_MAXATK; i++) {
+    BraceAtk &a = braceAtk[i];
+    if (!a.live || now < a.impact) continue;
+    a.live = false;
+    // judged against the shield as it was AT impact, not the one up now: a frame
+    // can land after the next shield was raised
+    int hit = -1;
+    for (int k = 0; k < 2; k++) {
+      if (braceZone[k] != a.zone) continue;
+      if (braceRaisedAt[k] <= a.impact && a.impact - braceRaisedAt[k] <= BRACE_SHIELD_MS) { hit = k; break; }
     }
-    ballX = CX + nx * 205;
-    ballY = CY + ny * 205;
-  }
-  // the clock, or three misses, whichever lands first
-  if (gameUntil && millis() >= gameUntil && !gameOverUntil) {
-    gameNewHi = (gameScore > pet.gameHi);
-    pet.playResult(gameScore);
-    sfxPlay(gameNewHi && gameScore > 0 ? SFX_MEDAL : SFX_LEVEL);
-    gameOverUntil = millis() + 4000;
-    return;
-  }
-  if (ballY > 384) {  // to the ground
-    if (++gameMisses >= 3) {
-      gameNewHi = (gameScore > pet.gameHi);
-      pet.playResult(gameScore);  // updates the record and gives happiness
-      sfxPlay(gameNewHi && gameScore > 0 ? SFX_MEDAL : SFX_LEVEL);
-      gameOverUntil = millis() + 4000;
+    braceFbAt = now;
+    braceFbZone = a.zone;
+    if (hit >= 0) {
+      bool parry = a.impact - braceRaisedAt[hit] <= BRACE_PERF_MS;
+      uint8_t bonus = braceStreak / 4;         // clean blocks in a row pay more
+      if (bonus > 2) bonus = 2;
+      braceFbPts = (parry ? 3 : 2) + bonus;
+      braceFb = parry ? 2 : 1;
+      int sc = gameScore + braceFbPts;
+      gameScore = sc > 255 ? 255 : sc;
+      braceStreak++;
+      sfxPlay(parry ? SFX_MEDAL : SFX_HIT);
     } else {
-      respawnBall();
+      braceFb = 3;
+      braceStreak = 0;
+      gameMisses++;
+      sfxPlay(SFX_FAINT);
     }
   }
-  // the creature follows it along the bottom
-  float chase = (ballX - gamePetX) * 0.12f;
-  if (chase > 7) chase = 7;
-  if (chase < -7) chase = -7;
-  gamePetX += chase;
+  if (gameMisses >= BRACE_HEARTS || now >= gameUntil) gameFinish(now);
 }
 
 // ---------- punching bag (trains strength) ----------
+// A timing game: the bag swings and only a tap as it crosses the line scores.
+// PERFECT and GOOD are windows in TIME either side of the crossing, so they
+// stay fair as the swing speeds up (the period shrinks from 1.5 s to 1 s);
+// the track under the bag redraws them in pixels from the current speed.
+
+#define SACK_MS 10000UL
+#define SACK_PI 3.14159265f
+#define SACK_THETA 0.72f      // peak swing, radians
+#define SACK_ROPE 100         // pivot to the top of the bag
+#define SACK_BAG_H 116
+#define SACK_BAG_HW 36
+#define SACK_PY 56            // pivot height
+#define SACK_TRACK_Y 296
+#define SACK_GOOD_MS 120
+#define SACK_PERF_MS 50
+#define SACK_LOCK_MS 320      // a mistimed tap costs this long
+
+// radians per ms at time `now`: the swing speeds up over the session
+static float sackOmega(uint32_t now) {
+  float p = 1.0f - (float)(sackUntil > now ? sackUntil - now : 0) / SACK_MS;
+  if (p < 0) p = 0;
+  return 2.0f * SACK_PI / (1500.0f - 500.0f * p);
+}
+
+// brings the phase up to `now`, and breaks the combo for any crossing that went
+// by without a hit
+static void sackAdvance(uint32_t now) {
+  float w = sackOmega(now);
+  sackPhase += (float)(now - sackLastMs) * w;
+  sackLastMs = now;
+  float goodRad = SACK_GOOD_MS * w;
+  while (sackPhase > sackNextK * SACK_PI + goodRad) {
+    if (sackNextK != sackLastK) sackCombo = 0;
+    sackNextK++;
+  }
+}
 
 void startSack() {
   if (pet.isEgg() || pet.sleeping || pet.ceremony) return;
   sackOpen = true;
-  sackUntil = millis() + 10000;
+  sackUntil = millis() + SACK_MS;
   sackOverUntil = 0;
   sackHits = 0;
-  sackShake = 0;
+  sackPts = 0;
+  sackCombo = 0;
+  sackPhase = -2.3f;          // first crossing arrives after ~0.7 s
+  sackLastMs = millis();
+  sackNextK = 0;
+  sackLastK = -1;
+  sackLockUntil = 0;
+  sackFbAt = 0;
   sackNewHi = false;
 }
 
 void sackTap() {
-  if (millis() >= sackUntil) return;  // time is already up
-  sackHits++;
-  sackShake = 16;  // shakes the bag
+  uint32_t now = millis();
+  if (now >= sackUntil || now < sackLockUntil) return;
+  sackAdvance(now);
+  float w = sackOmega(now);
+  int16_t k = (int16_t)floorf(sackPhase / SACK_PI + 0.5f);
+  float dms = fabsf(sackPhase - k * SACK_PI) / w;
+  if (dms <= SACK_GOOD_MS) {
+    if (k == sackLastK) return;           // already scored this pass
+    bool perfect = dms <= SACK_PERF_MS;
+    uint8_t bonus = sackCombo / 3;        // streaks pay more
+    if (bonus > 3) bonus = 3;
+    sackFbPts = (perfect ? 5 : 3) + bonus;
+    sackFbGrade = perfect ? 2 : 1;
+    sackPts += sackFbPts;
+    sackHits++;
+    sackCombo++;
+    sackLastK = k;
+    sfxPlay(perfect ? SFX_MEDAL : SFX_HIT);
+  } else {
+    sackCombo = 0;
+    sackFbPts = 0;
+    sackFbGrade = 0;
+    sackLockUntil = now + SACK_LOCK_MS;
+    sfxPlay(SFX_STATUS);
+  }
+  sackFbAt = now;
 }
 
 void drawGameScene();  // prototype (defined further below)
+
+// the bag, hung from the pivot and drawn as slices along its swing so it
+// leans with the rope; `flash` washes it toward white right after a hit
+static void sackDrawBag(float theta, uint16_t ink, uint8_t flash) {
+  float sn = sinf(theta), cs = cosf(theta);
+  int px = CX, py = SACK_PY;
+  uint16_t body = lerp565(C565(0xb5, 0x3a, 0x3a), C565(0xff, 0xff, 0xff), flash, 255);
+  uint16_t dark = lerp565(C565(0x7e, 0x28, 0x28), C565(0xff, 0xff, 0xff), flash, 255);
+  uint16_t lite = lerp565(C565(0xd8, 0x6a, 0x5e), C565(0xff, 0xff, 0xff), flash, 255);
+
+  // rope: two px thick
+  int bx = px + (int)(SACK_ROPE * sn), by = py + (int)(SACK_ROPE * cs);
+  gfx->drawLine(px, py, bx, by, ink);
+  gfx->drawLine(px + 1, py, bx + 1, by, ink);
+  gfx->drawLine(px - 1, py, bx - 1, by, ink);
+  gfx->fillCircle(px, py, 7, ink);                          // pivot
+  gfx->fillCircle(px, py, 3, C565(0xff, 0xd9, 0x8a));
+
+  const int R = 20;                                         // end rounding
+  for (int pass = 0; pass < 2; pass++) {
+    for (int sp = 0; sp <= SACK_BAG_H; sp += 2) {
+      int hw = SACK_BAG_HW;
+      if (sp < R)                  hw = SACK_BAG_HW - R + (int)sqrtf((float)(R * R - (R - sp) * (R - sp)));
+      else if (sp > SACK_BAG_H - R) {
+        int d = sp - (SACK_BAG_H - R);
+        hw = SACK_BAG_HW - R + (int)sqrtf((float)(R * R - d * d));
+      }
+      float sdist = SACK_ROPE + sp;
+      int cx = px + (int)(sdist * sn), cy = py + (int)(sdist * cs);
+      hw = (int)(hw / cs);                                  // a tilted bar is wider across
+      if (pass == 0) {                                      // outline
+        gfx->fillRect(cx - hw - 2, cy - 2, 2 * hw + 4, 5, ink);
+        continue;
+      }
+      uint16_t c = (sp < 18 || sp > SACK_BAG_H - 14) ? dark : body;
+      if (sp >= 56 && sp < 60) c = dark;                    // seam
+      gfx->fillRect(cx - hw, cy - 1, 2 * hw, 3, c);
+      if (c == body) {
+        gfx->fillRect(cx - hw + 9, cy - 1, 7, 3, lite);     // highlight
+        gfx->fillRect(cx + hw - 10, cy - 1, 10, 3, dark);   // shade
+      }
+    }
+  }
+}
 
 void renderSack() {
   uint32_t now = millis();
@@ -4123,12 +4312,12 @@ void renderSack() {
   if (sackOverUntil) {
     if (now > sackOverUntil) { sackOpen = false; return; }
     char b[20];
-    snprintf(b, sizeof(b), T(S_HITS_FMT), sackHits);
+    snprintf(b, sizeof(b), T(S_SCORE_FMT), sackPts);
     uiTextFit(UIF_BIG, CX, 178, b, ink, 1, 340);
     char g[18];
     snprintf(g, sizeof(g), T(S_STR_GAIN_FMT), sackGain);
     uiTextFit(UIF_BIG, CX, 231, g, UI_BAR_BAD, 1, 340);
-    if (sackNewHi && sackHits > 0) {
+    if (sackNewHi && sackPts > 0) {
       uiText(UIF_SMALL, CX, 270, T(S_NEW_RECORD), UI_BAR_WARN, 1);
     } else {
       char r[18];
@@ -4141,37 +4330,72 @@ void renderSack() {
 
   // the 10 s are over: apply the training
   if (now >= sackUntil) {
-    sackNewHi = (sackHits > pet.strHi);
-    sackGain = pet.trainStrength(sackHits);
+    sackNewHi = (sackPts > pet.strHi);
+    sackGain = pet.trainStrength(sackPts);
     sfxPlay(sackNewHi ? SFX_MEDAL : SFX_PLAY);
     sackOverUntil = now + 3500;
     gfx->flush();
     return;
   }
 
-  // vigorous mashing
-  sackShake *= 0.84f;
-  int off = (int)(sackShake * sinf(now * 0.05f));
-  int sx = CX + off, top = 86, sy = 150;
-  gfx->fillRect(CX - 3, 56, 6, top - 56, ink);          // hook/rope
-  gfx->fillRect(sx - 4, top - 30, 8, 34, ink);          // chain
-  gfx->fillRoundRect(sx - 42, top, 84, 150, 26, C565(0xb5, 0x3a, 0x3a));  // bag
-  gfx->fillRoundRect(sx - 42, top, 84, 22, 18, C565(0x7e, 0x28, 0x28));   // lid
-  gfx->drawRoundRect(sx - 42, top, 84, 150, 26, ink);
-  gfx->fillRect(sx - 42, top + 70, 84, 4, C565(0x7e, 0x28, 0x28));        // seam
+  sackAdvance(now);
+  float w = sackOmega(now);
+  float theta = SACK_THETA * sinf(sackPhase);
+  uint32_t fbAge = sackFbAt ? now - sackFbAt : 9999;
 
-  // hit counter
+  // the track under the bag: the GOOD and PERFECT windows in pixels, and a
+  // dot that shadows the bag so the timing can be read at a glance
+  float mid = SACK_ROPE + SACK_BAG_H / 2.0f;
+  int span = (int)(mid * sinf(SACK_THETA)) + SACK_BAG_HW + 10;
+  float pxPerMs = mid * SACK_THETA * w;                    // speed at the line
+  int goodPx = (int)(pxPerMs * SACK_GOOD_MS), perfPx = (int)(pxPerMs * SACK_PERF_MS);
+  uint16_t rail = night ? C565(0x2a, 0x34, 0x58) : C565(0xb8, 0xc4, 0xc0);
+  gfx->fillRoundRect(CX - span, SACK_TRACK_Y - 3, 2 * span, 6, 3, rail);
+  gfx->fillRoundRect(CX - goodPx, SACK_TRACK_Y - 9, 2 * goodPx, 18, 9,
+                     lerp565(rail, UI_BAR_OK, 2, 3));
+  gfx->fillRoundRect(CX - perfPx, SACK_TRACK_Y - 9, 2 * perfPx, 18, 9,
+                     C565(0xff, 0xd9, 0x6a));
+  gfx->fillRect(CX - 1, SACK_TRACK_Y - 12, 3, 24, ink);    // the line
+  int dotX = CX + (int)(mid * sinf(theta));
+  gfx->fillCircle(dotX, SACK_TRACK_Y, 6, ink);
+  gfx->fillCircle(dotX, SACK_TRACK_Y, 3, C565(0xff, 0xff, 0xff));
+
+  // the bag, washed white for a moment after a hit
+  uint8_t flash = 0;
+  if (sackFbGrade && fbAge < 140) flash = (uint8_t)(200 - fbAge * 200 / 140);
+  sackDrawBag(theta, ink, flash);
+
+  // feedback ring on the line and a rising "+n"
+  if (fbAge < 480) {
+    uint16_t fc = sackFbGrade == 2 ? C565(0xff, 0xd9, 0x6a)
+                : sackFbGrade == 1 ? UI_BAR_OK : UI_BAR_BAD;
+    int rad = 10 + (int)(fbAge / 9);
+    gfx->drawCircle(CX, SACK_TRACK_Y, rad, fc);
+    gfx->drawCircle(CX, SACK_TRACK_Y, rad + 1, fc);
+    if (sackFbGrade) {
+      char p[6];
+      snprintf(p, sizeof(p), "+%u", sackFbPts);
+      uiText(UIF_BIG, CX, SACK_TRACK_Y - 30 - (int)(fbAge / 12), p, fc, 1);
+    }
+  }
+
+  // score, with the streak beside it
   char buf[8];
-  snprintf(buf, sizeof(buf), "%u", sackHits);
-  uiText(UIF_HUGE, CX, 310, buf, ink, 1);
+  snprintf(buf, sizeof(buf), "%u", sackPts);
+  uiText(UIF_BIG, CX, 330, buf, ink, 1);
+  if (sackCombo >= 2) {
+    char cb[8];
+    snprintf(cb, sizeof(cb), "x%u", sackCombo);
+    uiText(UIF_BIG, CX + 90, 330, cb, C565(0xff, 0xb0, 0x40), 1);
+  }
 
-  uiTextFit(UIF_SMALL, CX, 336, T(S_HIT_FAST), ink, 1, 330);
+  uiTextFit(UIF_SMALL, CX, 356, T(S_HIT_FAST), ink, 1, 330);
 
   // time bar
   uint32_t left = sackUntil - now;
-  int bw = 280, fw = (int)((uint32_t)bw * left / 10000);
-  gfx->fillRoundRect(CX - bw / 2, 350, bw, 16, 5, UI_TRACK_TEXT);
-  if (fw > 2) gfx->fillRoundRect(CX - bw / 2, 350, fw, 16, 5, UI_BAR_OK);
+  int bw = 280, fw = (int)((uint32_t)bw * left / SACK_MS);
+  gfx->fillRoundRect(CX - bw / 2, 376, bw, 10, 5, UI_TRACK_TEXT);
+  if (fw > 2) gfx->fillRoundRect(CX - bw / 2, 376, fw, 10, 5, UI_BAR_OK);
 
   gfx->flush();
 }
@@ -4196,90 +4420,157 @@ void drawGameScene() {
   gfx->fillRect(0, hor, 466, 466 - hor, soil);
 }
 
+// where the shield for each side stands, and where its attack starts from
+static void braceZonePos(uint8_t z, int *sx, int *sy, int *ox, int *oy) {
+  if (z == BZ_LEFT)       { *sx = CX - 82; *sy = BRACE_PET_Y; *ox = CX - 205; *oy = BRACE_PET_Y; }
+  else if (z == BZ_RIGHT) { *sx = CX + 82; *sy = BRACE_PET_Y; *ox = CX + 205; *oy = BRACE_PET_Y; }
+  else                    { *sx = CX;      *sy = BRACE_PET_Y - 84; *ox = CX; *oy = 154; }
+}
+
+static void braceDrawPet(uint32_t now, bool flinch) {
+  if (pmd.loaded) {
+    uint8_t act = flinch && pmd.has(PMD_HURT) ? PMD_HURT : PMD_IDLE;
+    drawPmdAct(act, CX, BRACE_PET_Y + 56, now, true, false, 3);
+  } else if (mon.loaded) {
+    int sc = (mon.h * 2 > 130) ? 1 : 2;
+    int w = mon.w * sc, h = mon.h * sc;
+    uint16_t fm = mon.frameMs ? mon.frameMs : 100;
+    uint16_t fi = (now / fm) % mon.frames;
+    const uint8_t *fr = mon.data + (uint32_t)fi * mon.w * mon.h;
+    int px = CX - w / 2, py = BRACE_PET_Y + 56 - h;
+    for (int r2 = 0; r2 < mon.h; r2++)
+      for (int c = 0; c < mon.w; c++) {
+        uint8_t idx = fr[r2 * mon.w + c];
+        if (idx == 0xFF) continue;
+        gfx->fillRect(px + c * sc, py + r2 * sc, sc, sc, mon.pal[idx]);
+      }
+  }
+}
+
 void renderGame() {
   // no fillScreen(BLACK): drawGameScene covers the full 466x466. If the
   // DMA of the previous flush is still reading the buffer, it will see valid content (not black
   // half-painted), which was the flicker at 25 fps.
   bool night = sceneHour() < 6 || sceneHour() >= 20;
   uint16_t ink = night ? UI_INK_NIGHT : UI_INK;
+  uint32_t now = millis();
 
   if (gameOverUntil) {
     drawGameScene();
-    if (millis() > gameOverUntil) {
+    if (now > gameOverUntil) {
       gameOpen = false;
       return;
     }
     char buf[22];
     snprintf(buf, sizeof(buf), T(S_SCORE_FMT), gameScore);
-    uiTextFit(UIF_BIG, CX, 188, buf, ink, 1, 340);
+    uiTextFit(UIF_BIG, CX, 168, buf, ink, 1, 340);
+    char gn[22];
+    snprintf(gn, sizeof(gn), T(S_DEF_GAIN_FMT), gameGain);
+    uiTextFit(UIF_BIG, CX, 221, gn, UI_BAR_WARN, 1, 340);
     if (gameNewHi && gameScore > 0) {
-      uiText(UIF_SMALL, CX, 228, T(S_NEW_RECORD), UI_BAR_WARN, 1);
+      uiText(UIF_SMALL, CX, 262, T(S_NEW_RECORD), UI_BAR_WARN, 1);
     } else {
       char rec[20];
       snprintf(rec, sizeof(rec), T(S_RECORD_FMT), pet.gameHi);
-      uiText(UIF_SMALL, CX, 228, rec, ink, 1);
+      uiText(UIF_SMALL, CX, 262, rec, ink, 1);
     }
     const char *msg = gameScore >= 10 ? T(S_GREAT_JOY) : T(S_PLUS_JOY);
-    uiTextFit(UIF_SMALL, CX, 264, msg, ink, 1, 340);
+    uiTextFit(UIF_SMALL, CX, 298, msg, ink, 1, 340);
     gfx->flush();
     return;
   }
 
   drawGameScene();
-  stepGame();
+  stepGame(now);
+  if (gameOverUntil) { gfx->flush(); return; }
 
-  // score, record and lives
+  uint16_t pathCol = night ? C565(0x5a, 0x66, 0x90) : C565(0xe8, 0x9a, 0x6a);
+  uint16_t orbCol = C565(0xff, 0x6a, 0x3a);
+
+  // the telegraph: a dotted path and an orb that accelerates along it
+  for (int i = 0; i < BRACE_MAXATK; i++) {
+    const BraceAtk &a = braceAtk[i];
+    if (!a.live) continue;
+    int sx, sy, ox, oy;
+    braceZonePos(a.zone, &sx, &sy, &ox, &oy);
+    uint32_t born = a.impact - a.flight;
+    float u = now > born ? (float)(now - born) / a.flight : 0;
+    if (u > 1) u = 1;
+    for (int d = 1; d < 12; d++) {                         // dotted path
+      float f = d / 12.0f;
+      gfx->fillCircle(ox + (int)((sx - ox) * f), oy + (int)((sy - oy) * f), 2, pathCol);
+    }
+    if ((now / 110) & 1) gfx->drawCircle(ox, oy, 16, orbCol); // warning pulse at the source
+    float e = u * u;                                       // eases in: slow, then fast
+    int px = ox + (int)((sx - ox) * e), py = oy + (int)((sy - oy) * e);
+    int rad = 9 + (int)(13 * e);
+    for (int t = 3; t >= 1; t--) {                         // a short trail
+      float et = e - t * 0.06f;
+      if (et < 0) continue;
+      gfx->fillCircle(ox + (int)((sx - ox) * et), oy + (int)((sy - oy) * et), rad - t * 2,
+                      lerp565(orbCol, ink, t, 5));
+    }
+    gfx->fillCircle(px, py, rad, orbCol);
+    gfx->fillCircle(px, py, rad * 2 / 3, C565(0xff, 0xd9, 0x8a));
+    gfx->fillCircle(px, py, rad / 3, UI_WHITE);
+  }
+
+  bool flinch = braceFb == 3 && now - braceFbAt < 380;
+  braceDrawPet(now, flinch);
+
+  // the shield, up for BRACE_SHIELD_MS after each tap
+  for (int k = 1; k >= 0; k--) {
+    if (braceZone[k] >= BZ_COUNT) continue;
+    uint32_t age = now - braceRaisedAt[k];
+    if (age >= BRACE_SHIELD_MS) continue;
+    int sx, sy, ox, oy;
+    braceZonePos(braceZone[k], &sx, &sy, &ox, &oy);
+    uint16_t sc = age < BRACE_PERF_MS ? C565(0xff, 0xd9, 0x6a) : C565(0x6a, 0xd0, 0xff);
+    bool vert = braceZone[k] != BZ_TOP;
+    int w = vert ? 16 : 92, h = vert ? 92 : 16;
+    gfx->fillRoundRect(sx - w / 2 - 2, sy - h / 2 - 2, w + 4, h + 4, 10, ink);
+    gfx->fillRoundRect(sx - w / 2, sy - h / 2, w, h, 8, sc);
+    gfx->fillRoundRect(sx - w / 2 + 3, sy - h / 2 + 3, vert ? 4 : w - 6, vert ? h - 6 : 4, 2, UI_WHITE);
+  }
+
+  // result ring on the side that was hit, and a rising +n for a block
+  uint32_t fbAge = braceFbAt ? now - braceFbAt : 9999;
+  if (braceFb && fbAge < 480) {
+    int sx, sy, ox, oy;
+    braceZonePos(braceFbZone, &sx, &sy, &ox, &oy);
+    uint16_t fc = braceFb == 2 ? C565(0xff, 0xd9, 0x6a) : braceFb == 1 ? UI_BAR_OK : UI_BAR_BAD;
+    int rad = 14 + (int)(fbAge / 8);
+    gfx->drawCircle(sx, sy, rad, fc);
+    gfx->drawCircle(sx, sy, rad + 1, fc);
+    if (braceFb != 3) {
+      char p[6];
+      snprintf(p, sizeof(p), "+%u", braceFbPts);
+      uiText(UIF_BIG, sx, sy - 40 - (int)(fbAge / 12), p, fc, 1);
+    }
+  }
+
+  // score, record and hearts
   char buf[8];
   snprintf(buf, sizeof(buf), "%u", gameScore);
   uiText(UIF_BIG, CX, 58, buf, ink, 1);
+  if (braceStreak >= 4) {
+    char cb[8];
+    snprintf(cb, sizeof(cb), "x%u", 1 + (braceStreak / 4 > 2 ? 2 : braceStreak / 4));
+    uiText(UIF_BIG, CX + 90, 58, cb, C565(0xff, 0xb0, 0x40), 1);
+  }
   char rec[12];
   snprintf(rec, sizeof(rec), T(S_REC_FMT), pet.gameHi);
   uiText(UIF_SMALL, CX, 90, rec, ink, 1);
-  for (int i = 0; i < 3; i++) {
-    if (i < 3 - gameMisses) gfx->fillCircle(180 + i * 28, 104, 6, UI_BAR_BAD);
-    else gfx->drawCircle(180 + i * 28, 104, 6, UI_TRACK_TEXT);
+  for (int i = 0; i < BRACE_HEARTS; i++) {
+    if (i < BRACE_HEARTS - gameMisses) gfx->fillCircle(191 + i * 28, 104, 6, UI_BAR_BAD);
+    else gfx->drawCircle(191 + i * 28, 104, 6, UI_TRACK_TEXT);
   }
-  // The clock, drawn like the bag's and the reaction test's so all three games
-  // read the same way. Thin and near the rim: the middle belongs to the ball.
-  if (!gameOverUntil) {
-    uint32_t now2 = millis();
-    uint32_t left = (gameUntil > now2) ? gameUntil - now2 : 0;
-    int bw = 200, fw = (int)((uint32_t)bw * left / GAME_MS);
-    gfx->fillRoundRect(CX - bw / 2, 124, bw, 10, 4, UI_TRACK_TEXT);
-    if (fw > 2)
-      gfx->fillRoundRect(CX - bw / 2, 124, fw, 10, 4,
-                         left < 5000 ? UI_BAR_WARN : UI_BAR_OK);
-  }
-
-  if (pmd.loaded) {
-    uint8_t act = (ballX > gamePetX + 4) ? PMD_WALKR : (ballX < gamePetX - 4) ? PMD_WALKL : PMD_IDLE;
-    if (!pmd.has(act)) act = PMD_IDLE;
-    drawPmdAct(act, (int)gamePetX, 394, millis(), true, false, 3);
-  } else if (mon.loaded) {
-    int s = (mon.h * 2 > 130) ? 1 : 2;
-    int w = mon.w * s, h = mon.h * s;
-    uint16_t fm = mon.frameMs ? mon.frameMs : 100;
-    uint16_t fi = (millis() / fm) % mon.frames;
-    const uint8_t *fr = mon.data + (uint32_t)fi * mon.w * mon.h;
-    int px = (int)gamePetX - w / 2, py = 394 - h;
-    for (int r = 0; r < mon.h; r++)
-      for (int c = 0; c < mon.w; c++) {
-        uint8_t idx = fr[r * mon.w + c];
-        if (idx == 0xFF) continue;
-        gfx->fillRect(px + c * s, py + r * s, s, s, mon.pal[idx]);
-      }
-  }
-
-  // impact ring that expands and fades (soft hit feedback)
-  uint32_t ht = millis() - hitTime;
-  if (hitTime && ht < 260) {
-    int rad = 22 + (int)(ht / 6);
-    gfx->drawCircle((int)hitX, (int)hitY, rad, C565(0xff, 0xe7, 0x9f));
-    gfx->drawCircle((int)hitX, (int)hitY, rad - 2, C565(0xff, 0xd9, 0x8a));
-  }
-
-  // the pokeball
-  drawMap(SPR_ICON_PLAY, 16, (int)ballX - 24, (int)ballY - 24, 3, false);
+  // the clock, drawn like the other games' so all three read the same way
+  uint32_t left = (gameUntil > now) ? gameUntil - now : 0;
+  int bw = 200, fw = (int)((uint32_t)bw * left / GAME_MS);
+  gfx->fillRoundRect(CX - bw / 2, 124, bw, 10, 4, UI_TRACK_TEXT);
+  if (fw > 2)
+    gfx->fillRoundRect(CX - bw / 2, 124, fw, 10, 4, left < 5000 ? UI_BAR_WARN : UI_BAR_OK);
 
   gfx->flush();
 }
@@ -4628,19 +4919,78 @@ static void fillArcBand(int r0, int r1, float a0, float a1, uint16_t col) {
   }
 }
 
-// One shoe print: a rounded sole and a separate heel, x/y is the centre.
-static void drawFootprint(int x, int y, uint16_t col) {
-  gfx->fillRoundRect(x - 4, y - 8, 8, 10, 3, col);
-  gfx->fillRoundRect(x - 3, y + 4, 6, 4, 2, col);
+// Text and shapes that follow the plate's arc. The 4-bit UI font cannot rotate,
+// so a glyph is drawn by inverse mapping: every screen pixel in its rotated
+// bounding box is taken back into glyph space and the glyph's alpha is sampled
+// there (bilinear), then blended over what is already on the panel. `t` is the
+// reading direction and `n` the glyph's up; (ox, oy) is the glyph's baseline
+// origin.
+// (the alpha callbacks return 0..15, and 0 outside the glyph)
+
+struct ArcGlyphCtx { const UiFont *f; const UiGlyph *g; };
+static uint8_t arcGlyphA(const void *ctx, int i, int j) {
+  const ArcGlyphCtx *c = (const ArcGlyphCtx *)ctx;
+  if (i < 0 || j < 0 || i >= c->g->w || j >= c->g->h) return 0;
+  int n = j * c->g->w + i;
+  return (c->f->bits[c->g->off + (n >> 1)] >> ((n & 1) ? 0 : 4)) & 15;
+}
+
+// a footprint pointing along +x: a heel, a gap, and a rounded sole, 22 x 11
+static uint8_t arcFootA(const void *, int i, int j) {
+  if (i >= 0 && i <= 3 && j >= 3 && j <= 7) return 15;                       // heel
+  float dx = (i - 15.0f) / 6.8f, dy = (j - 5.0f) / 5.2f;                    // sole
+  return (dx * dx + dy * dy <= 1.0f) ? 15 : 0;
+}
+
+static void arcSplat(float ox, float oy, float tx, float ty, float nx, float ny,
+                     int w, int h, int xo, int yo, uint8_t (*alpha)(const void *, int, int), const void *ctx,
+                     uint16_t color) {
+  float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+  for (int k = 0; k < 4; k++) {
+    float gx = xo + ((k & 1) ? w : 0), gy = yo + ((k & 2) ? h : 0);
+    float X = ox + gx * tx - gy * nx, Y = oy + gx * ty - gy * ny;
+    if (X < minX) minX = X;
+    if (X > maxX) maxX = X;
+    if (Y < minY) minY = Y;
+    if (Y > maxY) maxY = Y;
+  }
+  const uint16_t *fb = gfx->getFramebuffer();
+  const int fr = color >> 11, fg = (color >> 5) & 63, fbl = color & 31;
+  for (int Y = (int)minY - 1; Y <= (int)maxY + 1; Y++) {
+    if (Y < 0 || Y >= LCD_HEIGHT) continue;
+    for (int X = (int)minX - 1; X <= (int)maxX + 1; X++) {
+      if (X < 0 || X >= LCD_WIDTH) continue;
+      float vx = X + 0.5f - ox, vy = Y + 0.5f - oy;
+      float si = (vx * tx + vy * ty) - xo - 0.5f;       // back into glyph pixels
+      float sj = -(vx * nx + vy * ny) - yo - 0.5f;
+      int i0 = (int)floorf(si), j0 = (int)floorf(sj);
+      float fi = si - i0, fj = sj - j0;
+      float a = alpha(ctx, i0, j0) * (1 - fi) * (1 - fj) + alpha(ctx, i0 + 1, j0) * fi * (1 - fj) +
+                alpha(ctx, i0, j0 + 1) * (1 - fi) * fj + alpha(ctx, i0 + 1, j0 + 1) * fi * fj;
+      int ai = (int)(a + 0.5f);
+      if (ai <= 0) continue;
+      if (ai > 15) ai = 15;
+      uint16_t bg = fb[(size_t)Y * LCD_WIDTH + X], c = color;
+      if (ai < 15) {
+        int r = (bg >> 11) + (fr - (bg >> 11)) * ai / 15;
+        int gg = ((bg >> 5) & 63) + (fg - ((bg >> 5) & 63)) * ai / 15;
+        int b = (bg & 31) + (fbl - (bg & 31)) * ai / 15;
+        c = (uint16_t)(r << 11 | gg << 5 | b);
+      }
+      gfx->drawPixel(X, Y, c);
+    }
+  }
 }
 
 // Today's steps, on a quarter-ring plate hugging the left edge above the party
-// chevron. The number is the point; the arc along the rim fills toward
-// STEP_GOAL and turns gold when it is met. No label text: a footprint says
-// "steps" in every language without a row in the string table.
+// chevron. A footprint trail and then the number run CLOCKWISE along the plate's
+// arc, each character turned to follow it (bottom to top on this side, tops
+// facing outward); the arc along the rim fills toward STEP_GOAL and turns gold
+// when it is met. No label text: a footprint says "steps" in every language
+// without a row in the string table.
 void drawStepPlate() {
-  const float A0 = 6.0f, A1 = 42.0f;     // degrees above 9 o'clock, bottom to top
-  const int R_IN = 166, R_OUT = 234;
+  const float A0 = 8.0f, A1 = 40.0f;     // degrees above 9 o'clock, bottom to top
+  const int R_IN = 172, R_OUT = 234;
   uint32_t steps = pet.stepsToday();
   uint16_t ink = inkColor();
   fillArcBand(R_IN, R_OUT, A0, A1, gNight ? C565(0x1c, 0x26, 0x44) : UI_WHITE);
@@ -4667,21 +5017,38 @@ void drawStepPlate() {
   float pe = P0 + (P1 - P0) * capped / STEP_GOAL;
   if (pe > P0 + 0.5f) fillArcBand(224, 232, P0, pe, steps >= STEP_GOAL ? UI_BAR_WARN : UI_BAR_OK);
 
-  // footprints at the top of the band, then the digits stacked down it, most
-  // significant first. Each digit sits where the text radius meets its row, so the
-  // column bends with the panel's edge and costs ~40 px of width instead of the
-  // 60 a flat row of five needs. They stay upright: the font cannot rotate.
-  drawFootprint(66, 100, ink);
-  drawFootprint(78, 106, ink);
-  char s[8];
-  int n = snprintf(s, sizeof(s), "%lu", (unsigned long)steps);
-  const int PITCH = 17, R_TXT = 194;
-  for (int i = 0; i < n; i++) {
-    int cy = 162 + (int)((i - (n - 1) / 2.0f) * PITCH);
-    int dy = CY - cy;
-    int cx = CX - (int)sqrtf((float)(R_TXT * R_TXT - dy * dy));
-    char c[2] = {s[i], 0};
-    uiText(UIF_SMALL, cx, cy - 8 + 14, c, ink, 1);   // centred on the column
+  // the content, centred on the plate: two footprints, a gap, then the digits.
+  // `s` is the distance along the path at the centre radius.
+  const float R_MID = 196.0f, R_BASE = 188.0f;   // path centre, and the digits' baseline
+  const int ICON_W = 30, GAP = 8;
+  char str[8];
+  snprintf(str, sizeof(str), "%lu", (unsigned long)steps);
+  int digitsW = uiTextWidth(UIF_SMALL, str);
+  float totalDeg = (ICON_W + GAP + digitsW) / R_MID / RAD;
+  float phi0 = (A0 + A1) / 2.0f - totalDeg / 2.0f;     // where the path starts
+
+  for (int f = 0; f < 2; f++) {                          // the footprint trail, toes outward
+    float sd = 8.0f + f * 14.0f;                         // each foot's middle along the path
+    float phi = (phi0 + sd / R_MID / RAD) * RAD;
+    float r = R_MID + (f ? -4.0f : 4.0f);                // staggered, like a walking pair
+    float tx = sinf(phi), ty = -cosf(phi), nx = -cosf(phi), ny = -sinf(phi);
+    float cx = CX - r * cosf(phi), cy = CY - r * sinf(phi);
+    // the bitmap points along +x, so make x the outward direction (n) and its
+    // up the opposite of the tangent: a pure rotation, no mirroring
+    arcSplat(cx - 11 * nx, cy - 11 * ny, nx, ny, -tx, -ty, 22, 11, 0, -5, arcFootA, nullptr, ink);
+  }
+
+  float s = ICON_W + GAP;
+  for (const char *c = str; *c; c++) {
+    if (*c < 32 || *c >= 127) continue;
+    const UiGlyph &g = UIF_SMALL.g[*c - 32];
+    float phi = (phi0 + (s + g.adv / 2.0f) / R_MID / RAD) * RAD;   // the glyph's middle
+    float tx = sinf(phi), ty = -cosf(phi), nx = -cosf(phi), ny = -sinf(phi);
+    float ox = CX - R_BASE * cosf(phi) - (g.adv / 2.0f) * tx;
+    float oy = CY - R_BASE * sinf(phi) - (g.adv / 2.0f) * ty;
+    ArcGlyphCtx ctx = { &UIF_SMALL, &g };
+    arcSplat(ox, oy, tx, ty, nx, ny, g.w, g.h, g.xo, g.yo, arcGlyphA, &ctx, ink);
+    s += g.adv;
   }
 }
 
@@ -6044,25 +6411,56 @@ void renderPlayer() {
   gfx->flush();
 }
 
-// ---------- reaction test (trains SPEED) ----------
-// The third training verb. The bag is a masher and the ball is a juggler, so
-// this one is a reaction: a target appears somewhere on the panel and you tap
-// it before it expires. The window shrinks as you go, which is what makes it
-// read as speed rather than as endurance.
-#define SPD_MS 15000UL       // session length
-#define SPD_LIFE0 1100       // first target's window, ms
-#define SPD_LIFE_MIN 380
-#define SPD_R 46             // target radius
+// ---------- dodge run (trains SPEED) ----------
+// The pet runs up the screen and rows of boulders come down three lanes. Tap a
+// lane to move there; each row leaves at least one lane free, so a row is always
+// dodgeable and the skill is how fast you read it and get across. The pace
+// climbs over the session. A crash stuns the pet for 0.4 s (it cannot
+// switch lanes, and cannot be hit again) and breaks the streak.
 
-void spdSpawn() {
-  // Keep the whole target inside the bezel: pick an angle and a radius that
-  // leave SPD_R of margin, rather than a square that clips at the corners.
-  int ang = random(360);
-  int rad = random(150);
-  float a = ang * 3.14159f / 180.0f;
-  spdX = CX + (int)(cosf(a) * rad);
-  spdY = CY + (int)(sinf(a) * rad);
-  spdBorn = millis();
+#define SPD_MS 15000UL
+#define SPD_LANE_DX 95        // lane spacing, px
+#define SPD_TOP 112           // where a row appears
+#define SPD_PET_Y 372         // the pet's feet
+#define SPD_HIT_TOP 300       // a row can hit the pet between these
+#define SPD_HIT_BOT 366
+#define SPD_HIT_DX 36         // lane centre to pet centre that counts as a hit
+#define SPD_STUN_MS 400
+#define SPD_MAXROWS 8
+
+struct SpdRow { float y; uint8_t mask; bool live; bool done; };
+SpdRow spdRows[SPD_MAXROWS];
+float spdPetX = 233;
+uint8_t spdLane = 1, spdStreak = 0;
+uint32_t spdLastMs = 0, spdNextSpawn = 0, spdStunUntil = 0, spdCrashAt = 0;
+float spdScroll = 0;
+
+static int spdLaneX(int lane) { return CX + (lane - 1) * SPD_LANE_DX; }
+
+// px per ms, and the gap between rows: both tighten over the session
+static float spdProgress(uint32_t now) {
+  float p = 1.0f - (float)(spdUntil > now ? spdUntil - now : 0) / SPD_MS;
+  return p < 0 ? 0 : (p > 1 ? 1 : p);
+}
+static float spdSpeed(uint32_t now) { return 0.16f + 0.14f * spdProgress(now); }
+static uint32_t spdInterval(uint32_t now) {
+  return (uint32_t)(1250 - 350 * spdProgress(now)) + random(100);
+}
+
+void spdSpawnRow(uint32_t now) {
+  for (int i = 0; i < SPD_MAXROWS; i++) {
+    if (spdRows[i].live) continue;
+    // one lane is always left open; sometimes a second one is too
+    uint8_t open = 1 << random(3);
+    uint8_t mask = 7 & ~open;
+    if (random(100) < 70) {                            // usually only one lane is blocked
+      uint8_t second = 1 << random(3);
+      mask &= ~(second == open ? (7 & ~open & -(7 & ~open)) : second);
+    }
+    spdRows[i] = { (float)SPD_TOP, mask, true, false };
+    break;
+  }
+  spdNextSpawn = now + spdInterval(now);
 }
 
 void startSpeedGame() {
@@ -6071,25 +6469,110 @@ void startSpeedGame() {
   spdUntil = millis() + SPD_MS;
   spdOverUntil = 0;
   spdHits = 0;
-  spdMisses = 0;
+  spdPts = 0;
   spdGain = 0;
   spdNewHi = false;
-  spdSpawn();
+  for (int i = 0; i < SPD_MAXROWS; i++) spdRows[i].live = false;
+  spdLane = 1;
+  spdPetX = spdLaneX(1);
+  spdStreak = 0;
+  spdStunUntil = spdCrashAt = 0;
+  spdScroll = 0;
+  spdLastMs = millis();
+  spdNextSpawn = millis() + 600;
 }
 
-static uint16_t spdLife() {
-  int life = SPD_LIFE0 - spdHits * 32;
-  return life < SPD_LIFE_MIN ? SPD_LIFE_MIN : life;
-}
+// one step of the run to time `now`: pace, the pet sliding to its lane, rows
+// falling, hits and dodges. The renderer calls this; so does the test.
+void spdStep(uint32_t now) {
+  uint32_t dt = now - spdLastMs;
+  if (dt > 120) dt = 120;
+  spdLastMs = now;
+  float v = spdSpeed(now);
+  spdScroll += v * dt;
 
-void spdTap(int16_t x, int16_t y) {
-  if (spdOverUntil) return;
-  int dx = x - spdX, dy = y - spdY;
-  if (dx * dx + dy * dy <= (SPD_R + 14) * (SPD_R + 14)) {
-    spdHits++;
-    sfxPlay(SFX_TAP);
-    spdSpawn();
+  float k = dt / 110.0f;                       // slide across a lane in ~110 ms
+  if (k > 1) k = 1;
+  spdPetX += (spdLaneX(spdLane) - spdPetX) * k;
+
+  for (int i = 0; i < SPD_MAXROWS; i++) {
+    SpdRow &r = spdRows[i];
+    if (!r.live) continue;
+    r.y += v * dt;
+    if (!r.done && r.y >= SPD_HIT_TOP && r.y <= SPD_HIT_BOT) {
+      for (int l = 0; l < 3; l++) {
+        if (!(r.mask & (1 << l))) continue;
+        if (fabsf(spdPetX - spdLaneX(l)) < SPD_HIT_DX) {
+          // a row that lands on a stunned pet is absorbed: no second stun, but
+          // it is not a free dodge either
+          if (now >= spdStunUntil) {
+            spdStunUntil = now + SPD_STUN_MS;
+            spdCrashAt = now;
+            sfxPlay(SFX_HIT);
+          }
+          r.done = true;
+          spdStreak = 0;
+          break;
+        }
+      }
+    }
+    if (!r.done && r.y > SPD_HIT_BOT) {        // went by without touching it
+      r.done = true;
+      uint8_t bonus = spdStreak / 3;           // a clean streak pays more
+      if (bonus > 2) bonus = 2;
+      spdPts += 3 + bonus;
+      spdHits++;
+      spdStreak++;
+      sfxPlay(SFX_TAP);
+    }
+    if (r.y > 440) r.live = false;
   }
+  if (now >= spdNextSpawn) spdSpawnRow(now);
+}
+
+// a tap anywhere in a lane's third of the panel sends the pet there
+void spdTap(int16_t x, int16_t y) {
+  uint32_t now = millis();
+  if (spdOverUntil || now >= spdUntil || now < spdStunUntil) return;
+  spdLane = x < CX - SPD_LANE_DX / 2 ? 0 : (x > CX + SPD_LANE_DX / 2 ? 2 : 1);
+}
+
+static void spdDrawPet(int cx, int groundY, bool stunned, uint32_t now) {
+  if (stunned && ((now / 90) & 1)) return;     // blink while stunned
+  if (pmd.loaded) {
+    float dx = spdLaneX(spdLane) - spdPetX;
+    uint8_t act = stunned && pmd.has(PMD_HURT) ? PMD_HURT
+                : dx > 6 ? PMD_WALKR : dx < -6 ? PMD_WALKL : PMD_IDLE;
+    if (!pmd.has(act)) act = PMD_IDLE;
+    drawPmdAct(act, cx, groundY, now, true, false, 3);
+  } else if (mon.loaded) {
+    int sc = (mon.h * 2 > 130) ? 1 : 2;
+    int w = mon.w * sc, h = mon.h * sc;
+    uint16_t fm = mon.frameMs ? mon.frameMs : 100;
+    uint16_t fi = (now / fm) % mon.frames;
+    const uint8_t *fr = mon.data + (uint32_t)fi * mon.w * mon.h;
+    int px = cx - w / 2, py = groundY - h;
+    for (int r2 = 0; r2 < mon.h; r2++)
+      for (int c = 0; c < mon.w; c++) {
+        uint8_t idx = fr[r2 * mon.w + c];
+        if (idx == 0xFF) continue;
+        gfx->fillRect(px + c * sc, py + r2 * sc, sc, sc, mon.pal[idx]);
+      }
+  }
+}
+
+// a boulder, bigger the nearer it is
+static void spdDrawRock(int cx, float y, uint16_t ink) {
+  float t = (y - SPD_TOP) / (float)(SPD_HIT_BOT - SPD_TOP);
+  if (t < 0) t = 0;
+  if (t > 1) t = 1;
+  int w = 40 + (int)(28 * t), h = 30 + (int)(24 * t);
+  int top = (int)y - h / 2;
+  gfx->fillRoundRect(cx - w / 2 + 3, top + h - 6, w - 6, 10, 5, C565(0x30, 0x34, 0x3c));  // shadow
+  gfx->fillRoundRect(cx - w / 2 - 2, top - 2, w + 4, h + 4, h / 2, ink);
+  gfx->fillRoundRect(cx - w / 2, top, w, h, h / 2 - 2, C565(0x8a, 0x80, 0x78));
+  gfx->fillRoundRect(cx - w / 2 + 6, top + 4, w / 3, h / 4, 4, C565(0xb4, 0xab, 0xa2));
+  gfx->fillRoundRect(cx + w / 6, top + h / 2, w / 3, h / 3, 4, C565(0x66, 0x5d, 0x56));
 }
 
 void renderSpeed() {
@@ -6101,12 +6584,12 @@ void renderSpeed() {
   if (spdOverUntil) {
     if (now > spdOverUntil) { spdOpen = false; return; }
     char b[24];
-    snprintf(b, sizeof(b), T(S_SCORE_FMT), spdHits);
+    snprintf(b, sizeof(b), T(S_SCORE_FMT), spdPts);
     uiTextFit(UIF_BIG, CX, 178, b, ink, 1, 340);
     char g[20];
     snprintf(g, sizeof(g), T(S_SPD_GAIN_FMT), spdGain);
     uiTextFit(UIF_BIG, CX, 231, g, UI_BAR_WARN, 1, 340);
-    if (spdNewHi && spdHits > 0) {
+    if (spdNewHi && spdPts > 0) {
       uiText(UIF_SMALL, CX, 270, T(S_NEW_RECORD), UI_BAR_WARN, 1);
     } else {
       char r[20];
@@ -6119,32 +6602,57 @@ void renderSpeed() {
 
   // session over?
   if (now >= spdUntil) {
-    spdNewHi = (spdHits > pet.spdHi);
-    spdGain = pet.trainSpeed(spdHits);
+    spdNewHi = (spdPts > pet.spdHi);
+    spdGain = pet.trainSpeed(spdPts);
     sfxPlay(spdNewHi ? SFX_MEDAL : SFX_PLAY);
     spdOverUntil = now + 3500;
     gfx->flush();
     return;
   }
-  // target expired?
-  if (now - spdBorn > spdLife()) {
-    spdMisses++;
-    spdSpawn();
+
+  spdStep(now);
+
+  // the track: three lanes, dashed dividers scrolling with the pace
+  uint16_t road = night ? C565(0x16, 0x1c, 0x30) : C565(0xa9, 0xb4, 0xb0);
+  uint16_t dash = night ? C565(0x3a, 0x44, 0x6a) : C565(0xe4, 0xea, 0xe6);
+  int half = SPD_LANE_DX * 3 / 2;
+  gfx->fillRect(CX - half, SPD_TOP - 8, 2 * half, 400 - SPD_TOP + 8, road);
+  gfx->fillRect(CX - half - 3, SPD_TOP - 8, 3, 400 - SPD_TOP + 8, ink);
+  gfx->fillRect(CX + half, SPD_TOP - 8, 3, 400 - SPD_TOP + 8, ink);
+  int phase = (int)spdScroll % 44;
+  for (int d = -1; d < 8; d++) {
+    int y0 = SPD_TOP - 8 + d * 44 + phase;
+    int y1 = y0 + 22;
+    if (y0 < SPD_TOP - 8) y0 = SPD_TOP - 8;
+    if (y1 > 400) y1 = 400;
+    if (y1 <= y0) continue;
+    for (int l = 1; l < 3; l++)
+      gfx->fillRect(CX - half + l * SPD_LANE_DX - 2, y0, 4, y1 - y0, dash);
   }
 
-  // the target, shrinking as its window runs out so the urgency is visible
-  uint32_t age = now - spdBorn;
-  int life = spdLife();
-  int r = SPD_R - (int)((uint32_t)SPD_R * age / (life ? life : 1) / 2);
-  if (r < 8) r = 8;
-  gfx->fillCircle(spdX, spdY, r, UI_BAR_BAD);
-  gfx->fillCircle(spdX, spdY, r * 2 / 3, UI_WHITE);
-  gfx->fillCircle(spdX, spdY, r / 3, UI_BAR_BAD);
+  for (int i = 0; i < SPD_MAXROWS; i++) {
+    const SpdRow &r = spdRows[i];
+    if (!r.live) continue;
+    for (int l = 0; l < 3; l++)
+      if (r.mask & (1 << l)) spdDrawRock(spdLaneX(l), r.y, ink);
+  }
+
+  bool stunned = now < spdStunUntil;
+  spdDrawPet((int)spdPetX, SPD_PET_Y, stunned, now);
+  if (spdCrashAt && now - spdCrashAt < 350) {   // crash ring
+    int rad = 24 + (int)((now - spdCrashAt) / 6);
+    gfx->drawCircle((int)spdPetX, SPD_PET_Y - 40, rad, UI_BAR_BAD);
+    gfx->drawCircle((int)spdPetX, SPD_PET_Y - 40, rad + 1, UI_BAR_BAD);
+  }
 
   char b[12];
-  snprintf(b, sizeof(b), "%u", spdHits);
+  snprintf(b, sizeof(b), "%u", spdPts);
   uiText(UIF_BIG, CX, 58, b, ink, 1);
-  // seconds left
+  uint8_t bonus = spdStreak / 3 > 2 ? 2 : spdStreak / 3;
+  if (bonus) {                                  // the streak bonus in force
+    snprintf(b, sizeof(b), "+%u", bonus);
+    uiText(UIF_BIG, CX + 90, 58, b, C565(0xff, 0xb0, 0x40), 1);
+  }
   uint32_t left = (spdUntil > now) ? (spdUntil - now + 999) / 1000 : 0;
   snprintf(b, sizeof(b), "%us", (unsigned)left);
   uiText(UIF_SMALL, CX, 90, b, ink, 1);
@@ -7995,6 +8503,11 @@ const char *statusMsg() {
   if (bathUntil) return "Splish splash!";  // universal onomatopoeia
   if (pet.sleeping) return "";   // the Zs above its head say it
   if (pet.eating()) return T(S_EATING);
+  if (pet.stepToast()) {                  // a step milestone has just paid
+    static char stepBuf[24];
+    snprintf(stepBuf, sizeof(stepBuf), T(S_STEP_GOAL_FMT), pet.stepToastSteps);
+    return stepBuf;
+  }
   if (pet.showHeart()) return T(S_LIKES);
   if (pet.fullness < 25) return T(S_HUNGRY);
   if (pet.hygiene < 25) return T(S_NEEDS_BATH);

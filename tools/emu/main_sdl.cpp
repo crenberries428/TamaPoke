@@ -169,6 +169,15 @@ extern uint8_t pickTrainer, pickPage;
 void pickDefault(uint8_t cap);
 extern bool pickHard;
 void startSpeedGame();
+void startSack();
+void startGame();
+struct BraceAtk { unsigned int impact; unsigned short flight; unsigned char zone; bool live; };
+extern BraceAtk braceAtk[];
+extern unsigned char braceZone[2], braceStreak; extern unsigned int braceRaisedAt[2];
+extern unsigned char gameScore, gameMisses;
+struct SpdRow { float y; unsigned char mask; bool live; bool done; };
+extern SpdRow spdRows[];
+extern float spdPetX; extern unsigned char spdLane, spdStreak; extern unsigned short spdPts;
 void startBath();
 extern uint32_t bathUntil;
 void setup();
@@ -383,7 +392,24 @@ static int shotMode(const char *screen, const char *out, int lvl, int iv, int de
     pickDefault(6); pickOpen = true;
   }
   else if (!strcmp(screen, "gymshard")) { gymOpen = true; gymHard = true; pet.badgesHard = 0x03; }
-  else if (!strcmp(screen, "speed")) { startSpeedGame(); }
+  else if (!strcmp(screen, "speed")) {
+    startSpeedGame();
+    // a frozen mid-run: rows at three depths so the shot shows the perspective
+    spdRows[0] = { 150.f, 0b011, true, false };
+    spdRows[1] = { 250.f, 0b110, true, false };
+    spdRows[2] = { 335.f, 0b101, true, false };
+    spdLane = 1; spdPetX = 233; spdPts = 12; spdStreak = 6;
+  }
+  else if (!strcmp(screen, "sack")) { startSack(); }
+  else if (!strcmp(screen, "brace")) {
+    startGame();
+    // a frozen mid-fight: two orbs on their way and a shield up on the left
+    uint32_t t = millis();
+    braceAtk[0] = { t + 450, 1000, 1, true };
+    braceAtk[1] = { t + 250, 1000, 2, true };
+    braceZone[0] = 0; braceRaisedAt[0] = t - 20;
+    gameScore = 14; braceStreak = 5; gameMisses = 1;
+  }
   else if (!strcmp(screen, "avatars")) {
     pet.renameTrainer("DYLAN");
     playerOpen = true;

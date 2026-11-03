@@ -21,7 +21,11 @@
 // day's worth of evolution. Derived from MINUTES_PER_LEVEL rather than written
 // as 24, so it stays "a day" if the level rate is ever retuned.
 #define EVO_PENALTY_LEVELS ((uint8_t)((24UL * 60) / MINUTES_PER_LEVEL))
-#define RUNAWAY_TICKS 60                   // runs away after 1 h with EVERYTHING at zero
+// Needs fall at 1/DRAIN_EVERY of the old rate: the drain block runs once every
+// DRAIN_EVERY ticks (live) or minutes (offline) at the original per-step amounts.
+// Must divide 256, since the live phase counter is a uint8_t.
+#define DRAIN_EVERY 2
+#define RUNAWAY_TICKS 180                  // runs away after 3 h with EVERYTHING at zero (fits uint8_t)
 // Night, by the RTC: midnight to 06:00. Auto-sleep needs BOTH: the screen off
 // AND this window.
 // The screen alone would pause the game every time you put the device in a
@@ -341,6 +345,7 @@ public:
   // retire that is already running actually was, and outlives the moment it began.
   bool retireIsEarly() const { return retirePending; }
   uint8_t evoPenalty() const { return evoPen; }
+  void dbgSetEvoPenalty(uint8_t n) { evoPen = n; }  // debug console only
   void startRunaway();   // also usable from the serial console (RUN)
 
   bool isEgg() const { return speciesId < 0; }
@@ -377,6 +382,12 @@ public:
   // test: force what the egg holds and hatch it now (serial command EGG).
   // The legendary/shiny IV guarantees only fire inside hatch(), so without
   // this there is no way to exercise them from outside the class.
+  // test: change what the WAITING egg holds without hatching it (EGGSET).
+  void dbgSetEggTarget(int16_t dex) {
+    if (dex < 1 || dex > DEX_COUNT || !isEgg()) return;
+    eggTarget = dex;
+    save();
+  }
   void dbgHatchAs(int16_t dex, bool wantShiny) {
     if (dex < 1 || dex > DEX_COUNT) return;
     eggTarget = dex;
@@ -460,6 +471,16 @@ public:
   uint32_t stepsToday() const { return stepDay == today() ? stepCount : 0; }
   void addSteps(uint32_t n);
   void setStepsToday(uint32_t n);   // debug/console: sets today's total outright
+  // Walking pays the pet at STEP_MS[]: a snack and joy, then joy, energy and bond,
+  // then at the daily goal a training point (through rewardTraining(), so the IV
+  // ceiling holds) on top of joy and bond. Each milestone pays once a day;
+  // stepClaim remembers which, tied to stepDay. Returns the highest milestone
+  // paid by this call (1-based), 0 if none. Nothing pays while an egg waits.
+  uint8_t stepClaim = 0;
+  uint32_t stepToastUntil = 0;
+  uint16_t stepToastSteps = 0;
+  uint8_t claimSteps();
+  bool stepToast() const { return millis() < stepToastUntil; }
 
 private:
   PetPrefs prefs;
@@ -494,6 +515,7 @@ private:
   uint8_t evoPen = 0;           // levels added to this creature's evolution gate
   bool retirePending = false;   // an early retire is under way; newEgg() spends it
   uint8_t neglectTicks = 0;
+  uint8_t drainPhase = 0;       // live tick counter gating the awake drain (not saved)
   uint16_t goodTicks = 0;  // well-cared streak: forges DEF
   uint32_t ceremonyUntil = 0;
   uint8_t bondToday = 0;       // daily cap on bond gain
