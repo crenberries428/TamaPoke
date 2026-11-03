@@ -242,6 +242,10 @@ void Link::tick(uint32_t now) {
     sendSquad(*this, resendSeq);
   } else if (txLive) {
     rawSend(*this, tx, txN);
+  } else if (state == LINK_READY || state == LINK_WAITING) {
+    // Nothing to repeat, but the peer's deadline is still running: a player
+    // reading the turn or choosing a move is not a peer that left.
+    put(*this, LM_PING, nullptr, 0);
   }
 }
 
@@ -348,6 +352,8 @@ void Link::onPacket(const uint8_t *buf, uint8_t len) {
       txLive = false;
       state = LINK_LOST;
       return;
+    case LM_PING:
+      return;                          // sawRx above is all it is for
     case LM_REMATCH:
       if (!theirsN || !mineN) return;
       rearm();
