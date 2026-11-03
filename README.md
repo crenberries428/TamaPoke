@@ -166,12 +166,14 @@ While **awake**, per minute:
 
 | Stat | Drain/min | Notes |
 |---|---|---|
-| FOOD | −2 | |
-| ENE | −1 | −1 extra if overweight (weight > 50 → sluggish) |
-| HYG | −1 | **−4 more per poop** on screen (max 3 poops) |
-| JOY | −1 | **−2 extra** if FOOD < 30, **−2 extra** if HYG < 30 |
+| FOOD | −1 | (−2 every 2nd minute) |
+| ENE | −0.5 | −0.5 extra if overweight (weight > 50 → sluggish) |
+| HYG | −0.5 | **−2 more per poop** on screen (max 3 poops) |
+| JOY | −0.5 | **−1 extra** if FOOD < 30, **−1 extra** if HYG < 30 |
 
-- ~**15 %/min** chance to poop (only if FOOD > 40). Poops tank hygiene fast.
+Needs drain at half the old rate: the full step lands every 2nd minute (`DRAIN_EVERY`).
+
+- ~**7.5 %/min** chance to poop (only if FOOD > 40). Poops tank hygiene fast.
 - **Care slip-up** = letting any stat hit **≤ 10** (60-min cooldown so it counts once).
   Each slip-up **delays evolution by 1 level** and cools the bond by 1.
 
@@ -521,7 +523,7 @@ witness it), each opening a two-option dialog:
 - **Farewell** (gold button, final form + 3 days): *Say goodbye* (warm farewell,
   rising hearts → new egg) or *Stay together* (keep your companion; re-offered in
   a day). Tension: a maxed-out friend vs. completing the Pokédex.
-- **Runaway** (dark button, total neglect for 1 h): a somber "feels abandoned"
+- **Runaway** (dark button, total neglect for 3 h): a somber "feels abandoned"
   ending in the rain — caring for the creature cancels it.
 
   **It does not ask, and that is the point** -- a creature you have to authorise
@@ -658,7 +660,7 @@ always pays off.
 
 The life cycle lasts **3 days** of play. Three endings (all leave a new egg):
 **farewell** (final form + 3 days), **release** (long press), **runaway** (all 4
-bars at zero for 1 h). Each bred species is recorded in the **bred Pokédex**
+bars at zero for 3 h). Each bred species is recorded in the **bred Pokédex**
 (normal and shiny separately).
 
 The egg rolls rarity over the ~79 base forms (47 common / 27 rare / 5 legendary),

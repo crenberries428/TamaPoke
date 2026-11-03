@@ -21,7 +21,11 @@
 // day's worth of evolution. Derived from MINUTES_PER_LEVEL rather than written
 // as 24, so it stays "a day" if the level rate is ever retuned.
 #define EVO_PENALTY_LEVELS ((uint8_t)((24UL * 60) / MINUTES_PER_LEVEL))
-#define RUNAWAY_TICKS 60                   // runs away after 1 h with EVERYTHING at zero
+// Needs fall at 1/DRAIN_EVERY of the old rate: the drain block runs once every
+// DRAIN_EVERY ticks (live) or minutes (offline) at the original per-step amounts.
+// Must divide 256, since the live phase counter is a uint8_t.
+#define DRAIN_EVERY 2
+#define RUNAWAY_TICKS 180                  // runs away after 3 h with EVERYTHING at zero (fits uint8_t)
 // Night, by the RTC: midnight to 06:00. Auto-sleep needs BOTH: the screen off
 // AND this window.
 // The screen alone would pause the game every time you put the device in a
@@ -494,6 +498,7 @@ private:
   uint8_t evoPen = 0;           // levels added to this creature's evolution gate
   bool retirePending = false;   // an early retire is under way; newEgg() spends it
   uint8_t neglectTicks = 0;
+  uint8_t drainPhase = 0;       // live tick counter gating the awake drain (not saved)
   uint16_t goodTicks = 0;  // well-cared streak: forges DEF
   uint32_t ceremonyUntil = 0;
   uint8_t bondToday = 0;       // daily cap on bond gain

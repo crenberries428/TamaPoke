@@ -4,8 +4,8 @@
 // a Dratini that had run away. That was reachable because the LIVE tick is the
 // only drain path with no floor: offline floors at 15, asleep floors at 30/35/45
 // and skips the neglect check entirely, but a board left RUNNING took an awake
-// creature to zero on all four stats in 100 minutes and to the point of running
-// away in 160.
+// creature to zero on all four stats in 100 minutes (200 since the drain halved) and to the point of running
+// away in 160 (it was 60 ticks of neglect then; RUNAWAY_TICKS is 180 now).
 //
 // Auto-sleep needs BOTH the screen off and the night window (00:00-06:00).
 // Screen-off alone paused the game whenever the device was put down, and the
@@ -138,7 +138,7 @@ int main(){
   // --- total neglect while AWAKE still ends badly: the teeth are still there
   {
     Pet p; fresh(p, 9);
-    liveMinutes(p, 9, 170);
+    liveMinutes(p, 9, 100 * DRAIN_EVERY + RUNAWAY_TICKS + 20);  // ~200 min to reach zero, then the full count
     ck(!p.sleeping, "ignored all day, still awake");
     ck(p.canRunawayNow(), "and genuine neglect still makes it ready to leave");
   }
@@ -153,17 +153,17 @@ int main(){
   }
 
   // --- THE MORNING AFTER. A creature that went to bed already at zero keeps a
-  //     neglectTicks of 60 all night, because the sleeping branch of tick()
+  //     neglectTicks of RUNAWAY_TICKS all night, because the sleeping branch of tick()
   //     returns before the neglect block and so neither counts nor clears it.
   //     canRunawayNow() used to read that counter alone, so waking the screen
   //     made a creature with 100 energy instantly ready to leave -- and the
   //     runaway button is drawn over the creature, where the tap that says good
   //     morning lands. It cost a real player a DRAGONAIR.
   {
-    Pet p; fresh(p, 22);
+    Pet p; fresh(p, 20);
     p.fullness = p.joy = p.energy = p.hygiene = 0;   // a neglected evening
-    liveMinutes(p, 22, 60);
-    ck(p.canRunawayNow(), "armed by an hour of total neglect before bed");
+    liveMinutes(p, 20, RUNAWAY_TICKS);               // ends at 23:00
+    ck(p.canRunawayNow(), "armed by hours of total neglect before bed");
 
     p.setScreenOff(true);                            // 23:00, not the window yet
     ck(!p.sleeping, "screen off before midnight does not sleep it yet");
@@ -184,9 +184,9 @@ int main(){
   // --- but the counter is not the only thing that matters: a creature actually
   //     at zero on waking is still ready, or the ending would have no teeth
   {
-    Pet p; fresh(p, 22);
+    Pet p; fresh(p, 20);
     p.fullness = p.joy = p.energy = p.hygiene = 0;
-    liveMinutes(p, 22, 60);
+    liveMinutes(p, 20, RUNAWAY_TICKS);
     p.dbgSetSeen(atHour(9));                         // morning, awake, still empty
     p.fullness = p.joy = p.energy = p.hygiene = 0;
     ck(p.canRunawayNow(), "genuinely empty on waking is still ready to leave");

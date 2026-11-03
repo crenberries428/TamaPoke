@@ -125,13 +125,14 @@ void Pet::syncClock(uint32_t nowEpoch) {
     }
     if (sleeping) {  // rest: falls slowly and with a floor, same as live
       energy = clamp100(energy + 6);
-      if (ageMinutes % 2 == 0) {
+      if (ageMinutes % (2 * DRAIN_EVERY) == 0) {
         fullness = dropTo(fullness, 1, 30);
         joy = dropTo(joy, 1, 35);
       }
-      if (ageMinutes % 3 == 0) hygiene = dropTo(hygiene, 1, 45);
+      if (ageMinutes % (3 * DRAIN_EVERY) == 0) hygiene = dropTo(hygiene, 1, 45);
       continue;
     }
+    if (i % DRAIN_EVERY) continue;   // awake needs fall at 1/DRAIN_EVERY of the old rate
     fullness = dropTo(fullness, 2, 15);
     energy = dropTo(energy, 1, 15);
     hygiene = dropTo(hygiene, 1, 15);
@@ -139,7 +140,7 @@ void Pet::syncClock(uint32_t nowEpoch) {
   }
   if (!isEgg()) {
     if (!sleeping) {  // does not get dirty while sleeping
-      uint8_t p = poops + mins / 240;
+      uint8_t p = poops + mins / (240 * DRAIN_EVERY);
       poops = p > 3 ? 3 : p;
     }
     // evolution is NOT applied offline: it is left ready and the user triggers it
@@ -185,11 +186,11 @@ void Pet::tick() {
   if (sleeping) {
     energy = clamp100(energy + 6);
     if (weight > 0 && ageMinutes % 3 == 0) weight--;
-    if (ageMinutes % 2 == 0) {                 // ~4x slower than awake
+    if (ageMinutes % (2 * DRAIN_EVERY) == 0) {  // ~4x slower than awake
       fullness = dropTo(fullness, 1, 30);
       joy = dropTo(joy, 1, 35);
     }
-    if (ageMinutes % 3 == 0) hygiene = dropTo(hygiene, 1, 45);
+    if (ageMinutes % (3 * DRAIN_EVERY) == 0) hygiene = dropTo(hygiene, 1, 45);
     defTick(true);  // resting is also wellbeing: it counts toward DEF
     checkMedals();  // can still cross a level by age while asleep
     if (++ticksSinceSave >= 5) pendingSave = true;
@@ -198,21 +199,28 @@ void Pet::tick() {
 
   if (ageMinutes % MINUTES_PER_LEVEL == 0) sfxPlay(SFX_LEVEL);  // levelled up (awake)
 
-  fullness = clamp100(fullness - 2);
-  energy = clamp100(energy - 1);
-  if (fullness > 40 && poops < 3 && random(100) < 15) poops++;
+  // the needs drain once every DRAIN_EVERY ticks; weight, DEF and the checks
+  // below keep their own per-tick pace
+  bool drainNow = (++drainPhase % DRAIN_EVERY) == 0;
+  if (drainNow) {
+    fullness = clamp100(fullness - 2);
+    energy = clamp100(energy - 1);
+    if (fullness > 40 && poops < 3 && random(100) < 15) poops++;
 
-  hygiene = clamp100(hygiene - 1 - 4 * poops);
-  // overweight makes it lazy: energy falls twice as fast
-  if (weight > 50) energy = clamp100(energy - 1);
+    hygiene = clamp100(hygiene - 1 - 4 * poops);
+    // overweight makes it lazy: energy falls twice as fast
+    if (weight > 50) energy = clamp100(energy - 1);
+  }
   if (weight > 0 && ageMinutes % 3 == 0) weight--;
 
   defTick(false);  // calm forges defence
 
-  int dJoy = -1;
-  if (fullness < 30) dJoy -= 2;
-  if (hygiene < 30) dJoy -= 2;
-  joy = clamp100(joy + dJoy);
+  if (drainNow) {
+    int dJoy = -1;
+    if (fullness < 30) dJoy -= 2;
+    if (hygiene < 30) dJoy -= 2;
+    joy = clamp100(joy + dJoy);
+  }
 
   // Mistake: leaving a stat in the gutter counts as a care
   // error (with a cooldown so the same mistake is not counted every minute)
@@ -228,7 +236,7 @@ void Pet::tick() {
   checkMedals();  // the user triggers evolution (canEvolveNow + tap), not the tick
   checkLearnGates();
 
-  // total neglect: with EVERYTHING at zero for an hour it becomes ready to run away;
+  // total neglect: with EVERYTHING at zero for 3 hours it becomes ready to run away;
   // it does NOT leave by itself, the user triggers it with the button (sad ending, witnessed)
   if (inTotalNeglect()) {
     if (neglectTicks < RUNAWAY_TICKS) neglectTicks++;
