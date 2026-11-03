@@ -1,6 +1,7 @@
 {
   "name": "TamaPoke",
   "version": "3.28",
+  "dex_count": 809,
   "new_install_prompt_erase": true,
   "builds": [
     {

@@ -54,10 +54,13 @@ echo "OK -> web/firmware/ (4 parts + tamapoke.bin for a blank board)"
 # The manifest version is what the installer shows people; keeping it in step
 # with FW_VERSION by hand is exactly the sort of thing that silently rots.
 FW="$(grep -o '"[0-9.]*"' TamaPoke.ino | head -1 | tr -d '"')"
-python3 - "$FW" <<'PYEOF'
+# The species count the installer page advertises, from the generated dex.
+DEX="$(grep -o 'define DEX_COUNT [0-9]*' dex.h | grep -o '[0-9]*$')"
+python3 - "$FW" "$DEX" <<'PYEOF'
 import json, sys
 m = json.load(open('web/manifest.json'))
 m['version'] = sys.argv[1]
+m['dex_count'] = int(sys.argv[2])   # read by index.html; esp-web-tools ignores it
 # Four parts at their own offsets, never one image at 0 -- see the comment above
 # the copies. The gap between 0x8000+partitions and 0xe000 is where NVS lives
 # and nothing may be written there.

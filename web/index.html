@@ -38,7 +38,7 @@
 <body>
 <div class="wrap">
   <h1>🐢 TamaPoke <span class="ver" id="fwver" title="The firmware this page installs">firmware</span></h1>
-  <p class="sub">A 386-Pokémon tamagotchi for the Waveshare ESP32-S3-Touch-AMOLED-1.75.
+  <p class="sub">A <span id="dexcount">Pokémon</span> tamagotchi for the Waveshare ESP32-S3-Touch-AMOLED-1.75.
      Install it from your browser — no Arduino, no drivers.</p>
 
   <p class="unsupported" id="unsupported">
@@ -135,7 +135,12 @@
 // would be one more copy to forget.
 fetch('manifest.json', { cache: 'no-store' })
   .then(r => r.json())
-  .then(m => { if (m.version) document.getElementById('fwver').textContent = 'firmware v' + m.version; })
+  .then(m => {
+    if (m.version) document.getElementById('fwver').textContent = 'firmware v' + m.version;
+    // the dex size comes from the same place, for the same reason: this line
+    // said "386-Pokemon" for three generations after the dex passed it
+    if (m.dex_count) document.getElementById('dexcount').textContent = m.dex_count + '-Pokémon';
+  })
   .catch(() => {});
 
 const log = (m) => { const el = document.getElementById('log'); el.style.display='block';
