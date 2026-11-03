@@ -61,10 +61,25 @@ region's answer, so it cannot be flipped to farm a legendary.
 
 **Steps.** The board's QMI8658 accelerometer counts your steps (`steps.cpp`, in
 any orientation, screen on or off) and the home screen shows today's total on a
-plate curved along the left edge, digits stacked down it. The arc on the rim fills
+plate curved along the left edge: a pair of footprints, toes pointing out to the edge, and then the number run
+clockwise along its arc, each character turned to follow the curve. The arc on the rim fills
 toward 10,000 and turns gold when you get there. The count resets at midnight by
-the RTC. It is a counter only: it changes nothing in the game. The threshold is
-tuned against synthetic gait in `steps_test`, not yet against a person walking.
+the RTC. The threshold is tuned against synthetic gait in `steps_test`, not yet
+against a person walking.
+
+**Walking pays the pet.** Three milestones a day, each paid **once** (it is
+remembered across a reboot, and starts over at midnight):
+
+| Steps | Reward |
+|---|---|
+| 2,500 | a snack: +15 FOOD, +10 JOY |
+| 5,000 | +20 JOY, +10 ENE, +3 bond |
+| 10,000 (the goal) | **+3 training** into a stat with headroom (never past its IV ceiling), +30 JOY, +5 bond |
+
+A heart rises, a sound plays and the status line reads `2500 STEPS!` for a few
+seconds. Nothing pays while an egg waits, and a milestone you reach then pays as
+soon as something hatches. The daily bond cap still applies. `STEPS <n>` on the
+console sets today's count, so a milestone can be tested without walking.
 
 ### Day, dusk, night
 

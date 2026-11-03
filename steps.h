@@ -17,6 +17,9 @@
 
 #define STEP_GOAL 10000        // the daily target the home screen's arc fills toward
 #define STEP_MAX  99999        // what the counter holds; five digits is what fits the plate
+// The day's milestones: each pays the pet once a day, the last is the goal.
+#define STEP_MS_COUNT 3
+static const uint16_t STEP_MS[STEP_MS_COUNT] = { 2500, 5000, STEP_GOAL };
 
 class StepDetector {
  public:

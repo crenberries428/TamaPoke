@@ -816,6 +816,8 @@ void loop() {
   static StepDetector stepper;
   float ax, ay, az;
   if (imuReadAccel(ax, ay, az)) pet.addSteps(stepper.feed(ax, ay, az, now));
+  uint8_t stepMs = pet.claimSteps();   // a milestone reached pays once a day
+  if (stepMs) sfxPlay(stepMs >= STEP_MS_COUNT ? SFX_MEDAL : SFX_HEART);
 
   // The link is pumped here rather than from the LAN screen, because it has to
   // keep running through the battle too: linkNowPoll() drains what the radio
@@ -4628,19 +4630,78 @@ static void fillArcBand(int r0, int r1, float a0, float a1, uint16_t col) {
   }
 }
 
-// One shoe print: a rounded sole and a separate heel, x/y is the centre.
-static void drawFootprint(int x, int y, uint16_t col) {
-  gfx->fillRoundRect(x - 4, y - 8, 8, 10, 3, col);
-  gfx->fillRoundRect(x - 3, y + 4, 6, 4, 2, col);
+// Text and shapes that follow the plate's arc. The 4-bit UI font cannot rotate,
+// so a glyph is drawn by inverse mapping: every screen pixel in its rotated
+// bounding box is taken back into glyph space and the glyph's alpha is sampled
+// there (bilinear), then blended over what is already on the panel. `t` is the
+// reading direction and `n` the glyph's up; (ox, oy) is the glyph's baseline
+// origin.
+// (the alpha callbacks return 0..15, and 0 outside the glyph)
+
+struct ArcGlyphCtx { const UiFont *f; const UiGlyph *g; };
+static uint8_t arcGlyphA(const void *ctx, int i, int j) {
+  const ArcGlyphCtx *c = (const ArcGlyphCtx *)ctx;
+  if (i < 0 || j < 0 || i >= c->g->w || j >= c->g->h) return 0;
+  int n = j * c->g->w + i;
+  return (c->f->bits[c->g->off + (n >> 1)] >> ((n & 1) ? 0 : 4)) & 15;
+}
+
+// a footprint pointing along +x: a heel, a gap, and a rounded sole, 22 x 11
+static uint8_t arcFootA(const void *, int i, int j) {
+  if (i >= 0 && i <= 3 && j >= 3 && j <= 7) return 15;                       // heel
+  float dx = (i - 15.0f) / 6.8f, dy = (j - 5.0f) / 5.2f;                    // sole
+  return (dx * dx + dy * dy <= 1.0f) ? 15 : 0;
+}
+
+static void arcSplat(float ox, float oy, float tx, float ty, float nx, float ny,
+                     int w, int h, int xo, int yo, uint8_t (*alpha)(const void *, int, int), const void *ctx,
+                     uint16_t color) {
+  float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+  for (int k = 0; k < 4; k++) {
+    float gx = xo + ((k & 1) ? w : 0), gy = yo + ((k & 2) ? h : 0);
+    float X = ox + gx * tx - gy * nx, Y = oy + gx * ty - gy * ny;
+    if (X < minX) minX = X;
+    if (X > maxX) maxX = X;
+    if (Y < minY) minY = Y;
+    if (Y > maxY) maxY = Y;
+  }
+  const uint16_t *fb = gfx->getFramebuffer();
+  const int fr = color >> 11, fg = (color >> 5) & 63, fbl = color & 31;
+  for (int Y = (int)minY - 1; Y <= (int)maxY + 1; Y++) {
+    if (Y < 0 || Y >= LCD_HEIGHT) continue;
+    for (int X = (int)minX - 1; X <= (int)maxX + 1; X++) {
+      if (X < 0 || X >= LCD_WIDTH) continue;
+      float vx = X + 0.5f - ox, vy = Y + 0.5f - oy;
+      float si = (vx * tx + vy * ty) - xo - 0.5f;       // back into glyph pixels
+      float sj = -(vx * nx + vy * ny) - yo - 0.5f;
+      int i0 = (int)floorf(si), j0 = (int)floorf(sj);
+      float fi = si - i0, fj = sj - j0;
+      float a = alpha(ctx, i0, j0) * (1 - fi) * (1 - fj) + alpha(ctx, i0 + 1, j0) * fi * (1 - fj) +
+                alpha(ctx, i0, j0 + 1) * (1 - fi) * fj + alpha(ctx, i0 + 1, j0 + 1) * fi * fj;
+      int ai = (int)(a + 0.5f);
+      if (ai <= 0) continue;
+      if (ai > 15) ai = 15;
+      uint16_t bg = fb[(size_t)Y * LCD_WIDTH + X], c = color;
+      if (ai < 15) {
+        int r = (bg >> 11) + (fr - (bg >> 11)) * ai / 15;
+        int gg = ((bg >> 5) & 63) + (fg - ((bg >> 5) & 63)) * ai / 15;
+        int b = (bg & 31) + (fbl - (bg & 31)) * ai / 15;
+        c = (uint16_t)(r << 11 | gg << 5 | b);
+      }
+      gfx->drawPixel(X, Y, c);
+    }
+  }
 }
 
 // Today's steps, on a quarter-ring plate hugging the left edge above the party
-// chevron. The number is the point; the arc along the rim fills toward
-// STEP_GOAL and turns gold when it is met. No label text: a footprint says
-// "steps" in every language without a row in the string table.
+// chevron. A footprint trail and then the number run CLOCKWISE along the plate's
+// arc, each character turned to follow it (bottom to top on this side, tops
+// facing outward); the arc along the rim fills toward STEP_GOAL and turns gold
+// when it is met. No label text: a footprint says "steps" in every language
+// without a row in the string table.
 void drawStepPlate() {
-  const float A0 = 6.0f, A1 = 42.0f;     // degrees above 9 o'clock, bottom to top
-  const int R_IN = 166, R_OUT = 234;
+  const float A0 = 8.0f, A1 = 40.0f;     // degrees above 9 o'clock, bottom to top
+  const int R_IN = 172, R_OUT = 234;
   uint32_t steps = pet.stepsToday();
   uint16_t ink = inkColor();
   fillArcBand(R_IN, R_OUT, A0, A1, gNight ? C565(0x1c, 0x26, 0x44) : UI_WHITE);
@@ -4667,21 +4728,38 @@ void drawStepPlate() {
   float pe = P0 + (P1 - P0) * capped / STEP_GOAL;
   if (pe > P0 + 0.5f) fillArcBand(224, 232, P0, pe, steps >= STEP_GOAL ? UI_BAR_WARN : UI_BAR_OK);
 
-  // footprints at the top of the band, then the digits stacked down it, most
-  // significant first. Each digit sits where the text radius meets its row, so the
-  // column bends with the panel's edge and costs ~40 px of width instead of the
-  // 60 a flat row of five needs. They stay upright: the font cannot rotate.
-  drawFootprint(66, 100, ink);
-  drawFootprint(78, 106, ink);
-  char s[8];
-  int n = snprintf(s, sizeof(s), "%lu", (unsigned long)steps);
-  const int PITCH = 17, R_TXT = 194;
-  for (int i = 0; i < n; i++) {
-    int cy = 162 + (int)((i - (n - 1) / 2.0f) * PITCH);
-    int dy = CY - cy;
-    int cx = CX - (int)sqrtf((float)(R_TXT * R_TXT - dy * dy));
-    char c[2] = {s[i], 0};
-    uiText(UIF_SMALL, cx, cy - 8 + 14, c, ink, 1);   // centred on the column
+  // the content, centred on the plate: two footprints, a gap, then the digits.
+  // `s` is the distance along the path at the centre radius.
+  const float R_MID = 196.0f, R_BASE = 188.0f;   // path centre, and the digits' baseline
+  const int ICON_W = 30, GAP = 8;
+  char str[8];
+  snprintf(str, sizeof(str), "%lu", (unsigned long)steps);
+  int digitsW = uiTextWidth(UIF_SMALL, str);
+  float totalDeg = (ICON_W + GAP + digitsW) / R_MID / RAD;
+  float phi0 = (A0 + A1) / 2.0f - totalDeg / 2.0f;     // where the path starts
+
+  for (int f = 0; f < 2; f++) {                          // the footprint trail, toes outward
+    float sd = 8.0f + f * 14.0f;                         // each foot's middle along the path
+    float phi = (phi0 + sd / R_MID / RAD) * RAD;
+    float r = R_MID + (f ? -4.0f : 4.0f);                // staggered, like a walking pair
+    float tx = sinf(phi), ty = -cosf(phi), nx = -cosf(phi), ny = -sinf(phi);
+    float cx = CX - r * cosf(phi), cy = CY - r * sinf(phi);
+    // the bitmap points along +x, so make x the outward direction (n) and its
+    // up the opposite of the tangent: a pure rotation, no mirroring
+    arcSplat(cx - 11 * nx, cy - 11 * ny, nx, ny, -tx, -ty, 22, 11, 0, -5, arcFootA, nullptr, ink);
+  }
+
+  float s = ICON_W + GAP;
+  for (const char *c = str; *c; c++) {
+    if (*c < 32 || *c >= 127) continue;
+    const UiGlyph &g = UIF_SMALL.g[*c - 32];
+    float phi = (phi0 + (s + g.adv / 2.0f) / R_MID / RAD) * RAD;   // the glyph's middle
+    float tx = sinf(phi), ty = -cosf(phi), nx = -cosf(phi), ny = -sinf(phi);
+    float ox = CX - R_BASE * cosf(phi) - (g.adv / 2.0f) * tx;
+    float oy = CY - R_BASE * sinf(phi) - (g.adv / 2.0f) * ty;
+    ArcGlyphCtx ctx = { &UIF_SMALL, &g };
+    arcSplat(ox, oy, tx, ty, nx, ny, g.w, g.h, g.xo, g.yo, arcGlyphA, &ctx, ink);
+    s += g.adv;
   }
 }
 
@@ -7995,6 +8073,11 @@ const char *statusMsg() {
   if (bathUntil) return "Splish splash!";  // universal onomatopoeia
   if (pet.sleeping) return "";   // the Zs above its head say it
   if (pet.eating()) return T(S_EATING);
+  if (pet.stepToast()) {                  // a step milestone has just paid
+    static char stepBuf[24];
+    snprintf(stepBuf, sizeof(stepBuf), T(S_STEP_GOAL_FMT), pet.stepToastSteps);
+    return stepBuf;
+  }
   if (pet.showHeart()) return T(S_LIKES);
   if (pet.fullness < 25) return T(S_HUNGRY);
   if (pet.hygiene < 25) return T(S_NEEDS_BATH);

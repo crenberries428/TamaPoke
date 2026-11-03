@@ -464,6 +464,16 @@ public:
   uint32_t stepsToday() const { return stepDay == today() ? stepCount : 0; }
   void addSteps(uint32_t n);
   void setStepsToday(uint32_t n);   // debug/console: sets today's total outright
+  // Walking pays the pet at STEP_MS[]: a snack and joy, then joy, energy and bond,
+  // then at the daily goal a training point (through rewardTraining(), so the IV
+  // ceiling holds) on top of joy and bond. Each milestone pays once a day;
+  // stepClaim remembers which, tied to stepDay. Returns the highest milestone
+  // paid by this call (1-based), 0 if none. Nothing pays while an egg waits.
+  uint8_t stepClaim = 0;
+  uint32_t stepToastUntil = 0;
+  uint16_t stepToastSteps = 0;
+  uint8_t claimSteps();
+  bool stepToast() const { return millis() < stepToastUntil; }
 
 private:
   PetPrefs prefs;

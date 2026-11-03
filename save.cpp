@@ -29,7 +29,7 @@ const SaveField SAVE_FIELDS[] = {
   { "badgX", SK_BYTES },{ "badhX", SK_BYTES },
   { "badh", SK_U16 },   { "dexreg", SK_BYTES }, { "dexsh", SK_BYTES },
   { "strk", SK_U16 },   { "bstrk", SK_U16 },  { "cday", SK_U32 },
-  { "stps", SK_U32 },   { "sday", SK_U32 },
+  { "stps", SK_U32 },   { "sday", SK_U32 },   { "stpc", SK_U8 },
   { "medal", SK_U16 },  { "tmedal", SK_U16 }, { "mstone", SK_U16 },
   { "ghi", SK_U16 },    { "shi", SK_U16 },    { "qhi", SK_U16 },
   // the banked creatures

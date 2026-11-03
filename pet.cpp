@@ -535,6 +535,7 @@ void Pet::addSteps(uint32_t n) {
   if (d != stepDay) {
     stepDay = d;
     stepCount = 0;
+    stepClaim = 0;            // a new day: every milestone can pay again
     pendingSave = true;
   }
   stepCount += n;
@@ -546,7 +547,38 @@ void Pet::addSteps(uint32_t n) {
   }
 }
 
+uint8_t Pet::claimSteps() {
+  if (isEgg() || ceremony != CER_NONE || stepDay != today()) return 0;
+  uint8_t top = 0;
+  for (uint8_t i = 0; i < STEP_MS_COUNT; i++) {
+    if ((stepClaim & (1 << i)) || stepCount < STEP_MS[i]) continue;
+    stepClaim |= 1 << i;
+    top = i + 1;
+    if (i == 0) {                            // a snack
+      fullness = clamp100(fullness + 15);
+      joy = clamp100(joy + 10);
+    } else if (i == 1) {                     // a good walk
+      joy = clamp100(joy + 20);
+      energy = clamp100(energy + 10);
+      addBond(3);
+    } else {                                 // the daily goal
+      uint8_t which;
+      rewardTraining(3, which);
+      joy = clamp100(joy + 30);
+      addBond(5);
+    }
+  }
+  if (top) {
+    heartUntil = millis() + HEART_MS;
+    stepToastUntil = millis() + 5000;
+    stepToastSteps = STEP_MS[top - 1];
+    save();
+  }
+  return top;
+}
+
 void Pet::setStepsToday(uint32_t n) {
+  if (stepDay != today()) stepClaim = 0;
   stepDay = today();
   stepCount = n > STEP_MAX ? STEP_MAX : n;
   stepsUnsaved = 0;
@@ -1333,6 +1365,7 @@ void Pet::save() {
   prefs.putUInt("cday", lastCareDay);
   prefs.putUInt("stps", stepCount);
   prefs.putUInt("sday", stepDay);
+  prefs.putUChar("stpc", stepClaim);
   prefs.putUChar("bond", bond);
   prefs.putUShort("medal", medals);
   prefs.putUShort("tmedal", totalMedals);
@@ -1401,6 +1434,7 @@ void Pet::load() {
   lastCareDay = prefs.getUInt("cday", 0);
   stepCount = prefs.getUInt("stps", 0);
   stepDay = prefs.getUInt("sday", 0);
+  stepClaim = prefs.getUChar("stpc", 0);
   bond = prefs.getUChar("bond", 0);
   medals = prefs.getUShort("medal", 0);
   totalMedals = prefs.getUShort("tmedal", 0);
