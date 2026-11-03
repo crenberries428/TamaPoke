@@ -4,6 +4,7 @@
 #include "dex.h"
 #include "trainers.h"   // GYM_REGIONS sizes the badge masks
 #include "party.h"
+#include "music_ids.h"   // TUNE_* -- the ids only, none of the note data
 
 // 1 tick = 1 game minute. Lower this value to test faster
 // (e.g. 5000UL = stats fall 12x faster).
@@ -38,6 +39,21 @@
 #define NIGHT_END 6
 enum : uint8_t { SLEEP_NONE = 0, SLEEP_AUTO, SLEEP_PLAYER };
 #define DEF_TRAIN_TICKS 60                 // minutes of wellbeing per +1 DEF
+// Jukebox listening: every LISTEN_EVERY minutes an awake creature spends with a
+// song playing is worth LISTEN_JOY joy, up to LISTEN_DAILY_MIN minutes a day
+// (so +18 a day at most). The cap is what keeps a looping song from replacing
+// play; it resets with the RTC day, like the bond's.
+#define LISTEN_EVERY 5
+#define LISTEN_JOY 3
+#define LISTEN_DAILY_MIN 30
+
+// How each jukebox song is earned. ONE table (tuneRule() in pet.cpp) answers
+// both "is it unlocked" and, through the UI, "what does it take" -- the hint on
+// a locked row reads the same rule the unlock checks, so they cannot disagree.
+enum : uint8_t { TRULE_FREE = 0, TRULE_BADGES, TRULE_HATCH, TRULE_GOODBYE, TRULE_STREAK, TRULE_STEPS };
+struct TuneRule { uint8_t kind; uint16_t n; };
+const TuneRule &tuneRule(uint8_t t);
+static_assert(TUNE_COUNT <= 16, "Pet::tunes needs a bit per song");
 
 // end-of-cycle ceremonies
 enum : uint8_t { CER_NONE = 0, CER_FAREWELL, CER_RUNAWAY, CER_RELEASE };
@@ -482,6 +498,26 @@ public:
   uint8_t claimSteps();
   bool stepToast() const { return millis() < stepToastUntil; }
 
+  // Jukebox songs the player has earned, a bit per TUNE_*. Player-wide like the
+  // badges, so newEgg() must never clear it; and once earned a song stays,
+  // even if what earned it (today's steps, say) later lapses.
+  uint16_t tunes = 0;
+  bool tuneUnlocked(uint8_t t) const { return t < TUNE_COUNT && ((tunes >> t) & 1); }
+  bool tuneEarned(uint8_t t) const;   // does the player meet tuneRule(t) right now
+  // Adds every newly earned song to `tunes` and returns their bits. With
+  // `announce` the last one is shown as "NEW SONG"; begin() passes false so an
+  // existing save upgrading into the jukebox is not greeted by a pile of toasts.
+  uint16_t checkTunes(bool announce = true);
+  uint8_t tuneToastId = 0;
+  uint32_t tuneToastUntil = 0;
+  bool tuneToast() const { return millis() < tuneToastUntil; }
+  // Set by the sketch every frame: a jukebox song is playing AND audible. Pet
+  // never asks the audio layer itself -- pet.cpp links into every test, none of
+  // which build audio.cpp. Not saved: the music does not survive a reboot.
+  bool musicOn = false;
+  uint8_t listenMin = 0;      // listening minutes counted toward today's cap
+  uint32_t listenDay = 0;     // the day listenMin belongs to
+  uint8_t listenToday() const { return listenDay == today() ? listenMin : 0; }
 private:
   PetPrefs prefs;
   // A Pet that was never begin()'d MUST NOT WRITE. Nothing enforced that, and
@@ -524,6 +560,7 @@ private:
 
   uint32_t today() const { return lastSeenEpoch ? lastSeenEpoch / 86400 : 0; }
   void registerCare();   // first care of the day: streak + bond
+  void listenTick();     // one awake minute with a song on
   void addBond(uint8_t amt);
   uint8_t rollIV(int bonus) const;  // a roll of 8-31 pushed up by care
   void rollIVs();                   // all 4, with the legendary/shiny guarantees

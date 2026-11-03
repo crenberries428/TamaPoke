@@ -41,7 +41,7 @@
 
 // Version del firmware. Subir este numero en cada release (y manifest.json para
 // el instalador web). Se muestra en la pantalla de ajustes y por serie al arrancar.
-#define FW_VERSION "3.27"
+#define FW_VERSION "3.28"
 #define PET_CRY_GAP_MS 6000  // minimum time between cries from petting
 
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(
@@ -140,14 +140,30 @@ bool menuOpen = false;
 // the centre, and sqrt(233^2 - 160^2) = 169 means it can only span y 64..402.
 #define MENU_Y 75
 #define MENU_W 320
-#define MENU_H 316
-#define MENU_ROW_H 52
+#define MENU_H 326
+#define MENU_ROW_H 44
 #define MENU_ROW_GAP 6
-// 5 rows: STATS / POKEDEX / SETTINGS / RETIRE / CLOSE. At MENU_Y 75 the panel
-// spans 75..391 and the round display gives a half-width of 171 there against
-// the 160 a row needs, so the corners stay on glass.
-#define MENU_ROWS 5
+// 6 rows, by name: a retire check that said `i == 3` broke the day a row was
+// added above it. At MENU_Y 75 the panel spans 75..401; the round display gives
+// a half-width of 161 at y 401 against the 160 a row needs, so the corners stay
+// on glass. Rows are 44 px, the same height as the gym ladder's.
+enum : uint8_t { MENU_STATS = 0, MENU_DEX, MENU_JUKE, MENU_SETTINGS, MENU_RETIRE, MENU_CLOSE, MENU_ROWS };
 #define MENU_ROW_Y(i) (MENU_Y + 16 + (i) * (MENU_ROW_H + MENU_ROW_GAP))
+
+// The jukebox, from the menu. Songs in JUKE_ORDER, JUKE_PER_PAGE to a page;
+// horizontal swipes page it (circularly), a vertical swipe or a tap below the
+// rows backs out. What is PLAYING is never stored here: audioCurrentTrack() is
+// the one answer, so a battle taking the music over cannot leave a row lit.
+bool jukeOpen = false;
+uint8_t jukePage = 0;
+#define JUKE_PER_PAGE 5
+#define JUKE_X 73
+#define JUKE_W 320
+#define JUKE_ROW_H 48
+#define JUKE_ROW_GAP 8
+#define JUKE_ROW_Y(i) (100 + (i) * (JUKE_ROW_H + JUKE_ROW_GAP))
+#define JUKE_BACK_Y 392       // a tap below this backs out
+#define JUKE_BEAT_MS 400.0f   // the dancing pet's hop: one bounce per beat
 
 // Party screen. partyPick != 0 means the newcomer needs a slot: the player
 // either taps someone to replace or lets it go.
@@ -249,7 +265,7 @@ enum : uint8_t {
   SCR_STARTER = 0, SCR_REGION, SCR_GALLERY, SCR_DEXPICK, SCR_MOVEPICK, SCR_BOX,
   SCR_PARTY, SCR_KEYBOARD, SCR_CARD, SCR_PLAYER, SCR_CLOCK, SCR_GYM, SCR_GYMPICK,
   SCR_LAN, SCR_PICK, SCR_BATTLE, SCR_WIN, SCR_LEARN, SCR_TRAIN, SCR_MENU,
-  SCR_GAME, SCR_MAIN, SCR_COUNT
+  SCR_GAME, SCR_JUKEBOX, SCR_MAIN, SCR_COUNT
 };
 extern const char *const SCREEN_NAME[SCR_COUNT];   // const is internal linkage in C++
 
@@ -266,6 +282,12 @@ uint8_t uiCurrentScreen();
 void uiConfirmRects(int *b1Top, int *b1Bot, int *b2Top, int *b2Bot);
 void renderParty();
 void renderBox();
+void openJukebox();
+bool jukeAudible();
+void drawMusicNotes(uint32_t now);
+void renderJukebox();
+void jukeTap(int16_t x, int16_t y);
+void jukeSwipe(int dir);
 void drawConfirmPanel(const char *q, const char *sub1, const char *sub2,
                       uint16_t subCol, const char *o1, uint16_t c1, uint16_t t1,
                       const char *o2, uint16_t c2, uint16_t t2);
@@ -273,7 +295,7 @@ const char *const SCREEN_NAME[SCR_COUNT] = {
   "starter", "region", "gallery", "dexpick", "movepick", "box",
   "party", "keyboard", "card", "player", "clock", "gym", "gympick",
   "lan", "pick", "battle", "win", "learn", "train", "menu",
-  "minigame", "main"
+  "minigame", "jukebox", "main"
 };
 
 // Badge art for a region, or nullptr when that region has none yet.
@@ -892,6 +914,12 @@ void loop() {
 
   updateBrightness(now);
 
+  // The jukebox stops for bed and for a dark screen: a song looping in a pocket
+  // is a flat battery. Nothing else stops it -- leaving the jukebox screen does
+  // not, which is the point of having one.
+  if (audioCurrentTrack() != 0xFF && (screenOff || pet.sleeping)) audioMusic(MUS_NONE);
+  pet.musicOn = jukeAudible();
+
   // flush the periodic autosave ONLY with the screen dimmed/off or
   // asleep: the NVS write freezes both cores for ~1s (flash cache off),
   // and there is no animation to cut or finger waiting for a response here. With 90s
@@ -1160,6 +1188,13 @@ void handleSerial() {
     for (uint8_t i = 0; i < audioTrackCount(); i++)
       Serial.printf("%u %s\n", i, audioTrackName(i));
     Serial.println("DONE");
+  } else if (line == "TUNES" || line == "TUNES ALL") {
+    // the jukebox's unlocks; TUNES ALL hands out every song, for checking the screen
+    if (line == "TUNES ALL") { pet.tunes = (uint16_t)((1u << TUNE_COUNT) - 1); pet.saveNow(); }
+    for (uint8_t t = 0; t < TUNE_COUNT; t++)
+      Serial.printf("%u %-18s %s\n", t, audioTrackName(t), pet.tuneUnlocked(t) ? "unlocked" : "locked");
+    Serial.printf("listened today: %u/%u min\n", pet.listenToday(), LISTEN_DAILY_MIN);
+    Serial.println("DONE");
   } else if (line == "MUSIC OFF") {
     audioMusic(MUS_NONE);
     Serial.println("DONE");
@@ -1410,6 +1445,7 @@ void onSwipeV(int dir) {
   }
   if (playerOpen) { playerOpen = false; return; }
   if (trainOpen) { trainOpen = false; return; }
+  if (jukeOpen) { jukeOpen = false; return; }   // vertical backs out; the song plays on
   if (movePickOpen) { movePickOpen = false; return; }
   if (boxOpen) { boxOpen = false; boxSel = 0; return; }   // vertical backs out
   if (partyOpen) {
@@ -1758,6 +1794,7 @@ void onSwipe(int dir) {
     return;
   }
   if (trainOpen) { trainOpen = false; return; }
+  if (jukeOpen) { jukeSwipe(dir); return; }   // pages, never closes
   if (movePickOpen) {   // the picker is paged; without this its later pages
     uint8_t all[64];    // were simply unreachable
     uint8_t n = learnableList(all, sizeof(all));
@@ -1932,6 +1969,10 @@ void onTap(int16_t x, int16_t y) {
     }
     return;   // modal: nothing else on screen responds until it is answered
   }
+  if (jukeOpen) {
+    jukeTap(x, y);
+    return;
+  }
   if (trainOpen) {
     bool inPanel = (x >= TRAIN_X && x <= TRAIN_X + TRAIN_W &&
                     y >= TRAIN_Y && y <= TRAIN_Y + TRAIN_H);
@@ -1963,14 +2004,15 @@ void onTap(int16_t x, int16_t y) {
       if (y < ry || y > ry + MENU_ROW_H) continue;
       sfxPlay(SFX_TAP);
       menuOpen = false;
-      if (i == 0) { cardOpen = true; cardPage = 1; }   // straight to the stats page
-      else if (i == 1) { galleryOpen = true; galleryPick = true; galleryPage = 0; rpickPage = 0; galleryDetail = 0; galleryDirty = true; }
-      else if (i == 2) { openClock(); }
-      else if (i == 3) {
+      if (i == MENU_STATS) { cardOpen = true; cardPage = 1; }   // straight to the stats page
+      else if (i == MENU_DEX) { galleryOpen = true; galleryPick = true; galleryPage = 0; rpickPage = 0; galleryDetail = 0; galleryDirty = true; }
+      else if (i == MENU_JUKE) { openJukebox(); }
+      else if (i == MENU_SETTINGS) { openClock(); }
+      else if (i == MENU_RETIRE) {
         if (!pet.canRetireNow()) { sfxPlay(SFX_DENY); return; }
         choiceKind = 3; choiceUntil = millis() + 12000;
       }
-      return;                                     // i == 4 is CLOSE: just shut
+      return;                                     // MENU_CLOSE: just shut
     }
     return;
   }
@@ -3794,6 +3836,7 @@ uint8_t uiCurrentScreen() {
   if (pet.hasLearnOffer()) return SCR_LEARN;
   if (gameOpen || sackOpen || spdOpen) return SCR_GAME;
   if (trainOpen) return SCR_TRAIN;
+  if (jukeOpen) return SCR_JUKEBOX;
   if (menuOpen) return SCR_MENU;
   return SCR_MAIN;
 }
@@ -3875,6 +3918,10 @@ void render() {
   }
   if (trainOpen) {
     renderTrain();
+    return;
+  }
+  if (jukeOpen) {
+    renderJukebox();
     return;
   }
   if (kbOpen) {
@@ -7352,10 +7399,11 @@ void renderCard() {
 // Row labels are built fresh each frame because two of them carry live counts.
 static void menuRowLabel(int i, char *out, size_t n) {
   switch (i) {
-    case 0: snprintf(out, n, "%s", T(S_STATS)); break;
-    case 1: snprintf(out, n, T(S_POKEDEX_FMT), pet.registeredCount(), DEX_COUNT); break;
-    case 2: snprintf(out, n, "%s", T(S_SETTINGS)); break;
-    case 3: snprintf(out, n, "%s", T(S_RETIRE)); break;
+    case MENU_STATS: snprintf(out, n, "%s", T(S_STATS)); break;
+    case MENU_DEX: snprintf(out, n, T(S_POKEDEX_FMT), pet.registeredCount(), DEX_COUNT); break;
+    case MENU_JUKE: snprintf(out, n, "%s", T(S_JUKEBOX)); break;
+    case MENU_SETTINGS: snprintf(out, n, "%s", T(S_SETTINGS)); break;
+    case MENU_RETIRE: snprintf(out, n, "%s", T(S_RETIRE)); break;
     default: snprintf(out, n, "%s", T(S_CLOSE)); break;
   }
 }
@@ -7378,14 +7426,129 @@ void drawMenu() {
   const UiFont &rowFont = uiFitAll(UIF_SMALL, lp, lw, MENU_ROWS);   // one size for every row
   for (int i = 0; i < MENU_ROWS; i++) {
     int y = MENU_ROW_Y(i);
-    bool close = (i == MENU_ROWS - 1);
-    bool dead = (i == 3 && !pet.canRetireNow());   // an egg or a companion
-    bool retire = (i == 3 && !dead);               // destructive: red, white text
+    bool close = (i == MENU_CLOSE);
+    bool dead = (i == MENU_RETIRE && !pet.canRetireNow());   // an egg or a companion
+    bool retire = (i == MENU_RETIRE && !dead);               // destructive: red, white text
     gfx->fillRoundRect(MENU_X + 18, y, MENU_W - 36, MENU_ROW_H, 12,
                        retire ? UI_BAR_BAD : close || dead ? UI_TRACK_TEXT : UI_BG_DAY);
     gfx->drawRoundRect(MENU_X + 18, y, MENU_W - 36, MENU_ROW_H, 12, UI_INK);
     uiText(rowFont, CX, uiMidY(rowFont, y, MENU_ROW_H), lbls[i], retire ? UI_WHITE : UI_INK, 1);
   }
+}
+
+// ---------- jukebox ----------
+
+// Display order: the journey (title, home, the first route, the first town's
+// centre, Lavender), then the battle themes. Indices are TUNE_*, which are
+// append-only because the unlocks are a saved bitmask over them.
+static const uint8_t JUKE_ORDER[] = {
+  TUNE_TITLE, TUNE_PALLET, TUNE_ROUTE1, TUNE_CENTER, TUNE_LAVENDER,
+  TUNE_WILD, TUNE_TRN, TUNE_GYM, TUNE_WIN,
+};
+static_assert(sizeof(JUKE_ORDER) == TUNE_COUNT, "every song needs a place in JUKE_ORDER");
+static_assert(S_TUNE_ROUTE1 - S_TUNE_GYM + 1 == TUNE_COUNT,
+              "the S_TUNE_* names must run in TUNE_* order, one per song");
+#define JUKE_PAGES ((TUNE_COUNT + JUKE_PER_PAGE - 1) / JUKE_PER_PAGE)
+
+// Returns the text, not a StrId: the emulator's proto.h lists every prototype
+// above the includes, where StrId does not exist yet.
+const char *tuneName(uint8_t t) { return T((StrId)(S_TUNE_GYM + (t < TUNE_COUNT ? t : 0))); }
+
+// What it takes to unlock song t, read from the same rule the unlock checks.
+static void jukeHint(uint8_t t, char *out, size_t n) {
+  const TuneRule &r = tuneRule(t);
+  switch (r.kind) {
+    case TRULE_BADGES:
+      if (r.n == 1) snprintf(out, n, "%s", T(S_TRULE_BADGE));
+      else snprintf(out, n, T(S_TRULE_BADGES_FMT), r.n);
+      break;
+    case TRULE_HATCH:   snprintf(out, n, "%s", T(S_TRULE_HATCH)); break;
+    case TRULE_GOODBYE: snprintf(out, n, "%s", T(S_TRULE_GOODBYE)); break;
+    case TRULE_STREAK:  snprintf(out, n, T(S_TRULE_STREAK_FMT), r.n); break;
+    case TRULE_STEPS:   snprintf(out, n, T(S_TRULE_STEPS_FMT), r.n); break;
+    default: out[0] = 0; break;
+  }
+}
+
+// A song is audible: one is playing, the sound switch is on and the volume is
+// above zero. The pet only dances, and only earns its listening joy, to music
+// that is actually coming out of the speaker.
+bool jukeAudible() {
+  return audioCurrentTrack() != 0xFF && audioEnabled() && audioVolume() > 0;
+}
+
+void openJukebox() {
+  pet.checkTunes(false);   // a badge won a moment ago counts now, not next minute
+  jukeOpen = true;
+  jukePage = 0;
+}
+
+void jukeSwipe(int dir) {
+  // circular, like the player card: the screen closes by tapping or by a
+  // vertical swipe, never by running off the end of its pages
+  int p = (int)jukePage + (dir > 0 ? -1 : 1);
+  jukePage = (uint8_t)((p + JUKE_PAGES) % JUKE_PAGES);
+}
+
+void jukeTap(int16_t x, int16_t y) {
+  if (y >= JUKE_BACK_Y) { jukeOpen = false; return; }
+  for (uint8_t i = 0; i < JUKE_PER_PAGE; i++) {
+    uint8_t idx = jukePage * JUKE_PER_PAGE + i;
+    if (idx >= TUNE_COUNT) break;
+    int ry = JUKE_ROW_Y(i);
+    if (x < JUKE_X || x > JUKE_X + JUKE_W || y < ry || y > ry + JUKE_ROW_H) continue;
+    uint8_t t = JUKE_ORDER[idx];
+    if (!pet.tuneUnlocked(t)) { sfxPlay(SFX_DENY); return; }
+    if (audioCurrentTrack() == t) { audioMusic(MUS_NONE); sfxPlay(SFX_TAP); }
+    else audioPlayTrack(t);    // no tap cue: it would cut the song's first notes
+    return;
+  }
+}
+
+// a play triangle, or a stop square for the song that is on
+static void jukeIcon(int cx, int cy, bool playing, uint16_t col) {
+  if (playing) gfx->fillRect(cx - 7, cy - 7, 14, 14, col);
+  else gfx->fillTriangle(cx - 6, cy - 9, cx - 6, cy + 9, cx + 9, cy, col);
+}
+
+void renderJukebox() {
+  gfx->fillScreen(RGB565_BLACK);
+  gfx->fillCircle(CX, CY, 231, UI_BG_DAY);
+  uiTextFit(UIF_MID, CX, 70, T(S_JUKEBOX), UI_INK, 1, 280);
+  uint8_t on = audioCurrentTrack();
+  for (uint8_t i = 0; i < JUKE_PER_PAGE; i++) {
+    uint8_t idx = jukePage * JUKE_PER_PAGE + i;
+    if (idx >= TUNE_COUNT) break;
+    uint8_t t = JUKE_ORDER[idx];
+    int y = JUKE_ROW_Y(i);
+    bool open_ = pet.tuneUnlocked(t);
+    bool playing = (on == t);
+    gfx->fillRoundRect(JUKE_X, y, JUKE_W, JUKE_ROW_H, 12,
+                       playing ? UI_BAR_OK : open_ ? UI_WHITE : UI_TRACK_TEXT);
+    gfx->drawRoundRect(JUKE_X, y, JUKE_W, JUKE_ROW_H, 12, open_ ? UI_INK : UI_TRACK_TEXT);
+    if (open_) {
+      uint16_t ink = playing ? UI_WHITE : UI_INK;
+      jukeIcon(JUKE_X + 26, y + JUKE_ROW_H / 2, playing, ink);
+      uiTextFit(UIF_SMALL, JUKE_X + 48, uiMidY(UIF_SMALL, y, JUKE_ROW_H), tuneName(t),
+                ink, 0, JUKE_W - 64);
+    } else {
+      // locked, never hidden: the row says what it takes
+      char hint[48];
+      jukeHint(t, hint, sizeof(hint));
+      uiText(UIF_TINY, JUKE_X + 22, y + 20, "???", UI_INK, 0);
+      uiTextFit(UIF_TINY, JUKE_X + 22, y + 40, hint, UI_INK, 0, JUKE_W - 40);
+    }
+  }
+  bool muted = !audioEnabled() || audioVolume() == 0;
+  uiTextFit(UIF_TINY, CX, 392, muted ? T(S_JUKE_SOUND_OFF) : T(S_JUKE_HELP),
+            muted ? UI_BAR_BAD : UI_TRACK_TEXT, 1, 300);
+  for (uint8_t i = 0; i < JUKE_PAGES; i++) {
+    int dx = CX - (JUKE_PAGES - 1) * 13 + i * 26;
+    if (i == jukePage) gfx->fillCircle(dx, 410, 5, UI_INK);
+    else gfx->drawCircle(dx, 410, 4, UI_INK);
+  }
+  uiText(UIF_SMALL, CX, 440, T(S_BACK), UI_TRACK_TEXT, 1);
+  gfx->flush();
 }
 
 // ---------- training submenu (5th icon) ----------
@@ -8304,6 +8467,19 @@ void drawPetPMD() {
     beh.t0 = 0;
   } else if (m == MOOD_SAD && pmd.has(PMD_HURT)) {
     act = PMD_HURT;
+  } else if (pet.musicOn) {
+    // dancing to the jukebox: hops in place on the beat instead of wandering.
+    // The planner is not consulted, so it picks up where it was when the song ends.
+    act = pmd.has(PMD_HOP) ? PMD_HOP : pmd.has(PMD_NOD) ? PMD_NOD : PMD_IDLE;
+    int bob = (int)(fabsf(sinf(now * 3.14159f / JUKE_BEAT_MS)) * 10);
+    drawPmdActZ(pmd, act, (int)beh.x, PET_GROUND - bob, now, true, false, 5, PET_ZOOM, PET_MAX_PX);
+    drawMusicNotes(now);
+    if (pet.showHeart()) {
+      int hx, hy;
+      petHeadAnchor(PMD_IDLE, hx, hy);
+      drawHeartFloat(hx, hy);
+    }
+    return;
   } else {
     // content: the planner decides (idle / walk / gesture)
     if (now > beh.until) behNext();
@@ -8462,6 +8638,27 @@ void petHeadAnchor(uint8_t actId, int &hx, int &hy) {
   hy = PET_GROUND - (int)((a.base ? a.base : a.h) * sc / 100) + 6;
 }
 
+// Music notes for a dancing pet: three quavers drift up from alternate sides of
+// its head on staggered loops, swaying, and vanish near the top, so one is
+// always leaving -- the same family as the snoring Zs and the affection heart.
+static void drawQuaver(int x, int y, uint16_t col) {
+  gfx->fillCircle(x, y, 5, col);                 // head
+  gfx->fillRect(x + 3, y - 18, 3, 18, col);      // stem
+  gfx->fillTriangle(x + 6, y - 18, x + 6, y - 9, x + 13, y - 11, col);  // flag
+}
+void drawMusicNotes(uint32_t now) {
+  int hx, hy;
+  petHeadAnchor(PMD_IDLE, hx, hy);
+  for (int k = 0; k < 3; k++) {
+    float p = ((now + k * 600) % 1800) / 1800.0f;   // 0 at the head, 1 gone
+    if (p > 0.9f) continue;
+    int side = (k & 1) ? -1 : 1;
+    int x = hx + side * (34 + (int)(p * 20)) + (int)(sinf(p * 9.0f) * 5);
+    int y = hy + 16 - (int)(p * 70);   // from beside the head, not above it
+    drawQuaver(x, y, inkColor());
+  }
+}
+
 // Snoring: Zs drift up and to the right from the creature's head, growing as
 // they rise. Three are in flight at once, staggered, so there is always one
 // leaving. Replaces a static "Zz" and the "Zzz..." status line.
@@ -8518,6 +8715,11 @@ const char *statusMsg() {
   if (bathUntil) return "Splish splash!";  // universal onomatopoeia
   if (pet.sleeping) return "";   // the Zs above its head say it
   if (pet.eating()) return T(S_EATING);
+  if (pet.tuneToast()) {                  // a jukebox song has just unlocked
+    static char tuneBuf[40];
+    snprintf(tuneBuf, sizeof(tuneBuf), T(S_NEW_TUNE_FMT), tuneName(pet.tuneToastId));
+    return tuneBuf;
+  }
   if (pet.stepToast()) {                  // a step milestone has just paid
     static char stepBuf[24];
     snprintf(stepBuf, sizeof(stepBuf), T(S_STEP_GOAL_FMT), pet.stepToastSteps);

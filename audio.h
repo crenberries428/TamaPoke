@@ -35,6 +35,11 @@ void audioMusic(uint8_t id);
 void audioPlayTrack(uint8_t track);
 uint8_t audioTrackCount();
 const char *audioTrackName(uint8_t track);   // pokered file name, "" if out of range
+// The jukebox track playing now, or 0xFF if none (or a battle theme by the
+// battle path). THE answer to "is a song on": the jukebox screen, the pet's
+// dancing and its listening joy all ask this rather than keep their own flag,
+// so a battle taking the music over cannot leave one of them thinking it is on.
+uint8_t audioCurrentTrack();
 
 // 0..10. Stored, and applied as the square wave's amplitude; 0 is silence
 // without disabling the system, which is what a mute expects to do.

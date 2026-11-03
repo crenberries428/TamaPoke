@@ -45,7 +45,8 @@ static const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "%s: %s", "PARALISIS", "QUEMADURA", "VENENO", "DORMIDO", "CONGELADO", "CONFUSION",
     "Has ganado!", "Has perdido...",
     "%s saca a %s", "Adelante, %s!", "GIMNASIOS", "MEDALLAS %u/8", "ENTRENADOR", "VELOCIDAD +%u", "toca: cambiar avatar", "%u en total", "NORMAL", "DIFICIL",
- "ELEGIDOS %u/%u", "LUCHAR", "BLOQUEADO", "POKEMON", "%s derrotado!", "MEDALLA NUEVA!", "VOL %u", "CAJA %u/%u", "cambiar con %s: elige hueco", "CAJA", "TRAER", "solo con un huevo", "COMBATE LAN", "CREAR", "UNIRSE", "buscando...", "listo!", "version distinta", "crear o unirse", "rival: %u mons", "el rival se fue", "esperando al rival...", "OTRA VEZ", "HUIR", "de que region viene el huevo", "%s +%u", "ya no puede entrenar mas", "ELIGE TU REGION", "RETIRAR", "Retirarla ya?", "la siguiente evoluciona un dia mas tarde", "evoluciona un dia mas tarde",   "FALTA PACK", "SOLTAR", "se va para siempre", "AL EQUIPO", "no se unira a tu equipo", "VOLUMEN", "IDIOMA", "INFO", "BRILLO", "PRUEBA", "DEFENSA +%u", "%u PASOS!", },
+ "ELEGIDOS %u/%u", "LUCHAR", "BLOQUEADO", "POKEMON", "%s derrotado!", "MEDALLA NUEVA!", "VOL %u", "CAJA %u/%u", "cambiar con %s: elige hueco", "CAJA", "TRAER", "solo con un huevo", "COMBATE LAN", "CREAR", "UNIRSE", "buscando...", "listo!", "version distinta", "crear o unirse", "rival: %u mons", "el rival se fue", "esperando al rival...", "OTRA VEZ", "HUIR", "de que region viene el huevo", "%s +%u", "ya no puede entrenar mas", "ELIGE TU REGION", "RETIRAR", "Retirarla ya?", "la siguiente evoluciona un dia mas tarde", "evoluciona un dia mas tarde",   "FALTA PACK", "SOLTAR", "se va para siempre", "AL EQUIPO", "no se unira a tu equipo", "VOLUMEN", "IDIOMA", "INFO", "BRILLO", "PRUEBA", "DEFENSA +%u", "%u PASOS!",
+    "MUSICA", "LIDER DE GIMNASIO", "COMBATE ENTRENADOR", "COMBATE SALVAJE", "VICTORIA", "PANTALLA TITULO", "PUEBLO PALETA", "PUEBLO LAVANDA", "CENTRO POKEMON", "RUTA 1", "Eclosiona un huevo", "Gana una medalla", "Gana %u medallas", "Despidete de un companero", "Racha de %u dias", "Camina %u pasos en un dia", "Sonido apagado: ve a Ajustes", "CANCION NUEVA: %s", "toca: sonar / parar", },
   // ---------------- EN ----------------
   {
     "Evolving!", "Yum yum!", "It likes it!", "It's hungry!", "Needs a bath!",
@@ -85,7 +86,8 @@ static const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "You win!", "You lost...",
     "%s sends out %s", "Go, %s!", "GYMS", "BADGES %u/8", "TRAINER",
  "SPEED +%u", "tap: change avatar", "%u earned in all", "EASY", "HARD", "CHOSEN %u/%u", "FIGHT", "LOCKED", "POKEMON", "%s defeated!", "NEW BADGE!", "VOL %u", "BOX %u/%u", "swap with %s: pick a slot", "BOX", "BRING BACK", "only while an egg waits", "LAN BATTLE", "HOST", "JOIN", "searching...", "ready!", "different version", "host or join", "rival: %u mons", "the rival left", "waiting for the rival...", "AGAIN", "RUN", "where this egg comes from", "%s +%u", "trained as far as it can go", "CHOOSE A REGION", "RETIRE", "Retire it early?", "the next one evolves a day later", "evolves a day later",
-   "NEEDS PACK", "RELEASE", "gone for good", "TO PARTY", "it will not join your party", "VOLUME", "LANGUAGE", "ABOUT", "BRIGHTNESS", "TEST", "DEFENCE +%u", "%u STEPS!", },
+   "NEEDS PACK", "RELEASE", "gone for good", "TO PARTY", "it will not join your party", "VOLUME", "LANGUAGE", "ABOUT", "BRIGHTNESS", "TEST", "DEFENCE +%u", "%u STEPS!",
+    "JUKEBOX", "GYM LEADER", "TRAINER BATTLE", "WILD BATTLE", "VICTORY", "TITLE SCREEN", "PALLET TOWN", "LAVENDER TOWN", "POKEMON CENTER", "ROUTE 1", "Hatch an egg", "Win a gym badge", "Win %u gym badges", "Say goodbye to a creature", "%u-day care streak", "Walk %u steps in a day", "Sound is off: see Settings", "NEW SONG: %s", "tap: play / stop", },
   // ---------------- FR ----------------
   {
     "Il evolue!", "Miam miam!", "Il aime ca!", "Il a faim!", "Besoin d'un bain!",
@@ -124,7 +126,8 @@ static const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "%s: %s", "PARALYSIE", "BRULURE", "POISON", "ENDORMI", "GELE", "CONFUSION",
     "Gagne!", "Perdu...",
     "%s envoie %s", "Vas-y, %s!", "ARENES", "BADGES %u/8", "DRESSEUR", "VITESSE +%u", "touche: changer d'avatar", "%u au total", "NORMAL", "DIFFICILE", "CHOISIS %u/%u", "COMBATTRE", "VERROUILLE", "POKEMON", "%s vaincu!", "NOUVEAU BADGE!", "VOL %u", "BOITE %u/%u", "echanger avec %s: choisis", "BOITE", "RAMENER", "seulement avec un oeuf", "COMBAT LAN", "CREER", "REJOINDRE", "recherche...", "pret!", "version differente", "creer ou rejoindre", "rival: %u mons", "le rival est parti", "en attente du rival...", "ENCORE", "FUIR", "d ou vient cet oeuf", "%s +%u", "ne peut plus progresser", "CHOISIS TA REGION", "RETIRER", "Retirer maintenant?", "le suivant evolue un jour plus tard", "evolue un jour plus tard",
-   "PACK REQUIS", "RELACHER", "parti pour de bon", "A L EQUIPE", "ne rejoindra pas l equipe", "VOLUME", "LANGUE", "INFOS", "LUMINOSITE", "TEST", "DEFENSE +%u", "%u PAS!", },
+   "PACK REQUIS", "RELACHER", "parti pour de bon", "A L EQUIPE", "ne rejoindra pas l equipe", "VOLUME", "LANGUE", "INFOS", "LUMINOSITE", "TEST", "DEFENSE +%u", "%u PAS!",
+    "MUSIQUE", "CHAMPION D'ARENE", "COMBAT DRESSEUR", "COMBAT SAUVAGE", "VICTOIRE", "ECRAN TITRE", "BOURG PALETTE", "LAVANVILLE", "CENTRE POKEMON", "ROUTE 1", "Fais eclore un oeuf", "Gagne un badge", "Gagne %u badges", "Dis adieu a un compagnon", "Soins %u jours de suite", "Marche %u pas en un jour", "Son coupe: voir Reglages", "NOUVEL AIR: %s", "touche: jouer / stop", },
   // ---------------- DE ----------------
   {
     "Entwickelt sich!", "Mampf mampf!", "Gefaellt ihm!", "Hat Hunger!", "Braucht ein Bad!",
@@ -163,7 +166,8 @@ static const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "%s: %s", "PARALYSE", "VERBRANNT", "VERGIFTET", "SCHLAEFT", "GEFROREN", "VERWIRRT",
     "Gewonnen!", "Verloren...",
     "%s schickt %s", "Los, %s!", "ARENEN", "ORDEN %u/8", "TRAINER", "TEMPO +%u", "tippen: Avatar wechseln", "%u insgesamt", "NORMAL", "SCHWER", "GEWAEHLT %u/%u", "KAEMPFEN", "GESPERRT", "POKEMON", "%s besiegt!", "NEUER ORDEN!", "LAUT %u", "BOX %u/%u", "mit %s tauschen: waehle", "BOX", "ZURUECK", "nur mit einem Ei", "LAN KAMPF", "HOSTEN", "BEITRETEN", "suche...", "bereit!", "andere Version", "hosten oder beitreten", "Gegner: %u", "der Gegner ist weg", "warte auf den Gegner...", "NOCHMAL", "FLUCHT", "woher dieses Ei kommt", "%s +%u", "kann nicht weiter trainieren", "WAEHLE DEINE REGION", "VERABSCHIEDEN", "Jetzt verabschieden?", "das naechste entwickelt sich einen Tag spaeter", "entwickelt sich einen Tag spaeter",
-   "PACK FEHLT", "FREILASSEN", "fuer immer weg", "INS TEAM", "kommt nicht ins team", "LAUTSTAERKE", "SPRACHE", "INFO", "HELLIGKEIT", "TEST", "ABWEHR +%u", "%u SCHRITTE!", },
+   "PACK FEHLT", "FREILASSEN", "fuer immer weg", "INS TEAM", "kommt nicht ins team", "LAUTSTAERKE", "SPRACHE", "INFO", "HELLIGKEIT", "TEST", "ABWEHR +%u", "%u SCHRITTE!",
+    "MUSIK", "ARENALEITER", "TRAINERKAMPF", "WILDER KAMPF", "SIEG", "TITELBILD", "ALABASTIA", "LAVANDIA", "POKEMON-CENTER", "ROUTE 1", "Brute ein Ei aus", "Gewinne einen Orden", "Gewinne %u Orden", "Verabschiede einen Freund", "%u Tage Pflege am Stueck", "Laufe %u Schritte an einem Tag", "Ton aus: siehe Einstellungen", "NEUES LIED: %s", "tippen: spielen / stopp", },
   // ---------------- IT ----------------
   {
     "Si evolve!", "Gnam gnam!", "Gli piace!", "Ha fame!", "Vuole un bagno!",
@@ -202,7 +206,8 @@ static const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "%s: %s", "PARALISI", "SCOTTATURA", "VELENO", "ADDORMENTATO", "CONGELATO", "CONFUSIONE",
     "Hai vinto!", "Hai perso...",
     "%s manda %s", "Vai, %s!", "PALESTRE", "MEDAGLIE %u/8", "ALLENATORE", "VELOCITA +%u", "tocca: cambia avatar", "%u in totale", "NORMALE", "DIFFICILE", "SCELTI %u/%u", "LOTTA", "BLOCCATO", "POKEMON", "%s sconfitto!", "NUOVA MEDAGLIA!", "VOL %u", "BOX %u/%u", "scambia con %s: scegli", "BOX", "RIPORTA", "solo con un uovo", "LOTTA LAN", "CREA", "ENTRA", "ricerca...", "pronto!", "versione diversa", "crea o entra", "rivale: %u mons", "il rivale se n' e andato", "in attesa del rivale...", "ANCORA", "FUGGI", "da quale regione viene l uovo", "%s +%u", "non puo allenarsi oltre", "SCEGLI LA REGIONE", "RITIRARE", "Ritirarla adesso?", "il prossimo evolve un giorno dopo", "evolve un giorno dopo",
-   "MANCA PACK", "LIBERA", "via per sempre", "AL GRUPPO", "non entrera nel gruppo", "VOLUME", "LINGUA", "INFO", "LUMINOSITA", "PROVA", "DIFESA +%u", "%u PASSI!", },
+   "MANCA PACK", "LIBERA", "via per sempre", "AL GRUPPO", "non entrera nel gruppo", "VOLUME", "LINGUA", "INFO", "LUMINOSITA", "PROVA", "DIFESA +%u", "%u PASSI!",
+    "MUSICA", "CAPOPALESTRA", "LOTTA ALLENATORE", "LOTTA SELVATICA", "VITTORIA", "SCHERMATA TITOLO", "BIANCAVILLA", "LAVANDONIA", "CENTRO POKEMON", "PERCORSO 1", "Schiudi un uovo", "Vinci una medaglia", "Vinci %u medaglie", "Saluta un compagno", "%u giorni di cure di fila", "Cammina %u passi in un giorno", "Audio spento: vedi Impostazioni", "NUOVO BRANO: %s", "tocca: suona / ferma", },
   // ---------------- PT ----------------
   {
     "Evoluindo!", "Nham nham!", "Ele gosta!", "Esta com fome!", "Precisa de banho!",
@@ -241,7 +246,8 @@ static const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "%s: %s", "PARALISIA", "QUEIMADURA", "VENENO", "A DORMIR", "CONGELADO", "CONFUSAO",
     "Ganhaste!", "Perdeste...",
     "%s envia %s", "Vai, %s!", "GINASIOS", "MEDALHAS %u/8", "TREINADOR", "VELOCIDADE +%u", "toca: mudar avatar", "%u no total", "NORMAL", "DIFICIL", "ESCOLHIDOS %u/%u", "LUTAR", "BLOQUEADO", "POKEMON", "%s derrotado!", "NOVA MEDALHA!", "VOL %u", "CAIXA %u/%u", "trocar com %s: escolhe", "CAIXA", "TRAZER", "so com um ovo", "COMBATE LAN", "CRIAR", "ENTRAR", "a procurar...", "pronto!", "versao diferente", "criar ou entrar", "rival: %u mons", "o rival saiu", "a esperar pelo rival...", "OUTRA VEZ", "FUGIR", "de que regiao vem o ovo", "%s +%u", "ja nao pode treinar mais", "ESCOLHE A REGIAO", "REFORMAR", "Reformar agora?", "o proximo evolui um dia depois", "evolui um dia depois",
-   "FALTA PACK", "SOLTAR", "vai para sempre", "A EQUIPA", "nao entrara na equipa", "VOLUME", "IDIOMA", "INFO", "BRILHO", "TESTE", "DEFESA +%u", "%u PASSOS!", },
+   "FALTA PACK", "SOLTAR", "vai para sempre", "A EQUIPA", "nao entrara na equipa", "VOLUME", "IDIOMA", "INFO", "BRILHO", "TESTE", "DEFESA +%u", "%u PASSOS!",
+    "MUSICA", "LIDER DE GINASIO", "BATALHA DE TREINADOR", "BATALHA SELVAGEM", "VITORIA", "TELA DE TITULO", "PALLET", "LAVENDER", "CENTRO POKEMON", "ROTA 1", "Choque um ovo", "Ganhe uma insignia", "Ganhe %u insignias", "Despeca-se de um parceiro", "%u dias seguidos de cuidado", "Ande %u passos num dia", "Som desligado: veja Ajustes", "MUSICA NOVA: %s", "toque: tocar / parar", },
   // ---------------- ZH (simplified) ----------------
   // The only rows allowed non-ASCII: glyphs come from cjkfont.h (tools/gen_cjk.py).
   {
@@ -282,7 +288,8 @@ static const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "你赢了!", "你输了...",
     "%s 派出了 %s", "上吧, %s!", "道馆", "徽章 %u/8", "训练家",
     "速度 +%u", "点击: 换头像", "共获得 %u", "简单", "困难", "已选 %u/%u", "战斗", "未解锁", "宝可梦", "%s 被打败了!", "新徽章!", "音量 %u", "箱子 %u/%u", "与 %s 交换: 选择格子", "箱子", "带回来", "仅在有蛋时可用", "局域网对战", "主机", "加入", "搜索中...", "准备好了!", "版本不同", "主机或加入", "对手: %u 只", "对手离开了", "等待对手...", "再来", "逃跑", "这颗蛋的来源", "%s +%u", "已训练到极限", "选择地区", "退役", "要提前退役吗?", "下一只晚一天进化", "晚一天进化",
-    "需要图包", "放生", "永远离开", "入队", "它不会加入你的队伍", "音量", "语言", "关于", "亮度", "测试", "防御 +%u", "%u 步!", },
+    "需要图包", "放生", "永远离开", "入队", "它不会加入你的队伍", "音量", "语言", "关于", "亮度", "测试", "防御 +%u", "%u 步!",
+    "点唱机", "道馆馆主", "训练家对战", "野生对战", "胜利", "标题画面", "真新镇", "紫苑镇", "宝可梦中心", "1号道路", "孵化一颗蛋", "赢得一枚徽章", "赢得 %u 枚徽章", "与伙伴告别", "连续照顾 %u 天", "一天走 %u 步", "声音已关闭: 请看设置", "新曲目: %s", "点击: 播放 / 停止", },
   // ---------------- KO ----------------
   {
     "진화 중!", "냠냠!", "좋아해요!", "배고파요!", "목욕이 필요해요!",
@@ -322,7 +329,8 @@ static const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "승리!", "패배...",
     "%s 의 %s 등장!", "가라, %s!", "체육관", "배지 %u/8", "트레이너",
     "속도 +%u", "누르기: 아바타 변경", "총 %u 획득", "쉬움", "어려움", "선택 %u/%u", "싸우기", "잠김", "포켓몬", "%s 쓰러뜨림!", "새 배지!", "볼륨 %u", "박스 %u/%u", "%s 와 교체: 칸 선택", "박스", "데려오기", "알이 있을 때만", "LAN 배틀", "호스트", "참가", "검색 중...", "준비 완료!", "버전 다름", "호스트 또는 참가", "상대: %u 마리", "상대가 나갔어요", "상대를 기다리는 중...", "다시", "도망", "이 알의 출신지", "%s +%u", "더 이상 훈련할 수 없어요", "지역 선택", "은퇴", "일찍 은퇴할까요?", "다음 아이는 하루 늦게 진화", "하루 늦게 진화",
-    "팩 필요", "놓아주기", "영영 이별", "파티로", "파티에 들어가지 않아요", "볼륨", "언어", "정보", "밝기", "테스트", "방어 +%u", "%u 걸음!", },
+    "팩 필요", "놓아주기", "영영 이별", "파티로", "파티에 들어가지 않아요", "볼륨", "언어", "정보", "밝기", "테스트", "방어 +%u", "%u 걸음!",
+    "주크박스", "체육관 관장", "트레이너 배틀", "야생 배틀", "승리", "타이틀 화면", "태초마을", "보라타운", "포켓몬센터", "1번도로", "알을 부화시키기", "배지 1개 획득", "배지 %u개 획득", "파트너와 작별하기", "%u일 연속 돌보기", "하루에 %u 걸음 걷기", "소리 꺼짐: 설정 확인", "새 곡: %s", "누르기: 재생 / 정지", },
 };
 
 // Medal names in their three lengths [language][medal].
