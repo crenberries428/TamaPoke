@@ -1111,8 +1111,8 @@ uint8_t Pet::playResult(uint8_t score) {
   // Keeping the ball on the defensive stat fits it: you are stopping something
   // from getting past you.
   uint8_t before = trDef;
-  uint8_t gain = score / 2;
-  if (gain > 18) gain = 18;          // the same per-session ceiling as the bag
+  uint16_t g16 = (uint16_t)score * 3 / 5;   // 5 points = 3 training points
+  uint8_t gain = g16 > 18 ? 18 : (uint8_t)g16;   // the same per-session ceiling as the bag
   uint16_t v = (uint16_t)trDef + gain;
   trDef = v > trMaxDef() ? trMaxDef() : (uint8_t)v;
   gain = trDef - before;
@@ -1182,7 +1182,7 @@ uint8_t Pet::trainSpeed(uint16_t hits) {
 
 uint8_t Pet::trainStrength(uint16_t hits) {
   if (ceremony != CER_NONE || isEgg()) return 0;
-  uint8_t gain = hits / 4;          // ~4 hits = 1 training point
+  uint8_t gain = hits / 3;          // 3 points = 1 training point
   if (gain > 18) gain = 18;         // per-session cap: ATK is forged slowly
   uint8_t before = trAtk;
   uint8_t v = trAtk + gain;

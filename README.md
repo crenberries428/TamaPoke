@@ -154,7 +154,7 @@ Running on hardware. Implemented: 386 species + shinies animated from microSD, f
 life cycle (egg by rarity → evolution → farewell/release/runaway, each gated
 behind a decision dialog), bred-Pokédex with gallery, battle stats (IVs +
 training), retention hooks (streak / bond / medals / name), biome + real-time
-backgrounds, ball minigame, training bag, animated bath, RTC with offline
+backgrounds, brace-and-block minigame, training bag, animated bath, RTC with offline
 progression, battery (AXP2101) and PWR button, anti-burn-in dimming,
 **sound (ES8311) with a volume slider**, adjustable **brightness**, **8 UI languages (English default)**, **starter choice on
 first run**, and a one-click **web installer**.
@@ -196,12 +196,28 @@ Needs drain at half the old rate: the full step lands every 2nd minute (`DRAIN_E
 - 🍎 **Berry** (3 flavors): +25 FOOD. Each species has a **hidden favorite flavor**
   → +35 FOOD, +10 JOY, ♥, bond, and it gets revealed.
 - 🍬 **Candy:** +10 FOOD, +12 JOY, but **+12 weight** (fattening).
-- ⚽ **Play / minigame:** **+5 JOY, plus 2 per rally** (max +35), −ENE, burns
-  weight. Pure happiness — it trains nothing, so playing is never a stat grind.
-  Leaving early keeps what you earned.
-- 🎯 **Reaction test:** a target appears, tap it before it shrinks away. Trains
-  **SPEED**; the window tightens as you go.
-- 🥊 **Training bag:** trains **STRENGTH** (~4 hits = 1 pt, cap +18/session), tires it.
+- 🛡️ **Brace and block (minigame):** a 20 s fight that trains **DEFENSE** (5 points = 3
+  training pts, cap +18/session) and gives **+5 JOY, plus 2 per point** (max +35), −ENE,
+  burns weight. Orbs telegraph from the left, right or above along a dotted path; tap
+  that third of the panel to raise a shield, which holds 0.32 s and can only go up every
+  0.24 s. A block is **2 pts**, a **parry** (shield raised within 90 ms of impact) is
+  **3**, plus +1 per 4 clean blocks in a row (max +2). From halfway in, some attacks come
+  (about 1 in 4) as a pair from two sides, 0.38 s apart. The pace climbs (flight time
+  1.25 s → 1.0 s). A hit costs a heart, four end the run. Tapping the top quits and keeps what was earned.
+- 🎯 **Dodge run:** a 15 s run that trains **SPEED**. Rows of boulders come down three
+  lanes; tap a third of the panel to send the pet to that lane. Every row leaves at
+  least one lane open. Each row dodged is **3 pts**, with a streak bonus of +1 per 3
+  clean rows (max +2). The pace climbs from 0.16 to 0.30 px/ms and the gap between rows
+  shrinks from ~1.3 s to ~0.95 s; about 70 % of rows block a single lane. A crash stuns the pet for 0.4 s (no lane changes,
+  and rows landing on it count for nothing) and breaks the streak. 2 points = 1 training
+  pt, cap +18/session (about 9 clean rows).
+- 🥊 **Training bag:** a 10 s timing game that trains **STRENGTH** (3 points = 1 training
+  pt, cap +18/session), and tires it. The bag swings like a pendulum, speeding up from
+  a 1.5 s to a 1.0 s period, and only a tap as it crosses the line scores: **PERFECT**
+  (within 50 ms of the line) = 5 pts, **GOOD** (within 120 ms) = 3 pts, plus a streak
+  bonus of +1 per 3 clean passes (max +3). A mistimed tap scores nothing, breaks the
+  streak and locks taps for 0.32 s, so mashing earns nothing; a pass with no tap also
+  breaks the streak. Tapping the top quits and keeps what was earned.
 - 🫧 **Bath:** clears poops, HYG → 100.
 - 👆 **Pet it:** +5 JOY + bond.
 - 🌙 **Sleep:** rest — ENE **+6/min**, needs drain ~**4× slower** with floors
@@ -336,10 +352,9 @@ the games: **they cap training.**
   pattern and a shiny was never mediocre.
 - IVs are shown on the Battle page of the stat card; a perfect 31 is highlighted.
 
-Training: **STRENGTH** ← the bag, **SPEED** ← the reaction test, **DEFENSE** ← the
-ball game (and still 1 h of wellbeing passively). **VIT** can't be trained. All three
-live in the training menu now; the ball moved off the home row when it became
-defence's trainer.
+Training: **STRENGTH** ← the bag, **SPEED** ← the dodge run, **DEFENSE** ← the
+brace-and-block game (and still 1 h of wellbeing passively). **VIT** can't be trained.
+All three live in the training menu now.
 
 **TMs unlock at level 40**, all of them, and nothing before. A TM carries no level
 requirement in the data — true of the games, wrong here, because a young creature
@@ -507,7 +522,7 @@ If one bottoms out it counts as a *slip-up*.
 **Buttons (bottom arc, icons):**
 - 🍎 **Feed** → food menu: 3 berries (each species has a hidden favourite that
   gives a bonus) and a candy (+happiness but it fattens; weight makes it sluggish).
-- ⚽ **Play** → the pokeball minigame (joy only).
+- ⚽ **Play** → the brace-and-block minigame (trains DEFENSE, and joy).
 - 🌙 **Light** → sleep/wake (recovers energy, dims the screen). While asleep,
   needs decay much slower (rest).
 - 🫧 **Bath** → a foam scene that cleans up the poops.
@@ -617,9 +632,10 @@ Typing is shown on the Battle page of the stat card. *(Battles: on the roadmap.)
 
 Each creature has ATK/DEF/SPD/VIT = **base stat** + level + **IV** (0–31, rolled
 at hatch, `IV × level/100` exactly as in the real games) + **training**:
-- SPEED ← the **reaction test** (~2 reactions = 1 pt, cap +18 per session)
-- DEFENSE ← accumulated wellbeing (1 h resting or well-cared = +1)
-- STRENGTH ← the training bag (~4 hits = 1 pt, cap +18 per session)
+- SPEED ← the **dodge run** (2 points = 1 pt, cap +18 per session)
+- DEFENSE ← the **brace-and-block game** (5 points = 3 pts, cap +18 per session), and
+  accumulated wellbeing (1 h resting or well-cared = +1)
+- STRENGTH ← the training bag (timed hits; 3 points = 1 pt, cap +18 per session)
 - VIT (vitality, from the base HP stat) — not trainable
 
 ### Moves
