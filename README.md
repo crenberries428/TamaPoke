@@ -813,7 +813,7 @@ To test fast: lower `PET_TICK_MS`, `MINUTES_PER_LEVEL` and `FAREWELL_AGE_MIN` in
 Original project: [socquique/TamaPoke](https://github.com/socquique/TamaPoke) by
 Quique Tortosa. Code also taken from the fork
 [DylanPDao/TamaPoke](https://github.com/DylanPDao/TamaPoke) by Dylan Dao.
-UI font: Fredoka (SIL OFL 1.1). Cries: pret/pokered and pret/pokecrystal.
+UI font: Fredoka (SIL OFL 1.1). Cries: pret/pokered and pret/pokecrystal. Music: pret/pokered.
 All sprites: [PMD SpriteCollab](https://github.com/PMDCollab/SpriteCollab)
 (community, CC BY-NC). Base stats: [PokéAPI](https://pokeapi.co). Pokémon is a ™ of
 Nintendo / Game Freak / The Pokémon Company. Non-commercial, personal-use project.
