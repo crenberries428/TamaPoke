@@ -707,7 +707,7 @@ the volume curve. The amplitude scale in particular (`500 * vol`) is a guess at
 what sounds linear. This is part of what the soak test is for.
 
 **B. Storage and the box -- DONE.**
-- The box is 18 slots (3 pages of 6) under its OWN NVS key, not a bigger party
+- The box is 120 slots (20 pages of 6, a page number rather than dots) under its OWN NVS key, not a bigger party
   blob. That was deliberate: growing the party blob changes its stride, and the
   length-based migration in `begin()` cannot tell a stride change from a
   slot-count change, so an existing party would have been read back misaligned.
@@ -715,8 +715,13 @@ what sounds linear. This is part of what the soak test is for.
   checks a pre-box save keeps its whole party and comes up with an empty box.
 - `swapPartyBox()` is one call for deposit, withdraw and exchange, since any of
   the two slots may be empty. Reached by tapping a party slot then BOX.
-- Room to grow: 6 + 18 records is 720 B against a ~4000 B single-blob limit, so
-  the box could reach ~120 before it would need splitting.
+- Grown 18 -> 120 in v3.30: a 3600 B blob against a ~4000 B single-page limit,
+  in a 20 KB NVS partition (~16 KB usable, ~6 KB left after the box and the
+  rewrite headroom NVS needs). Going past ~120 means splitting the key or the SD
+  card. A shorter box blob is read as a prefix (`box_test` covers 18 -> 120).
+  `MAX_VAL` in `save.cpp` derives from `BOX_SLOTS` -- at its old fixed 768,
+  EXPORT silently skipped the grown box as if absent. Export buffers are
+  `SAVE_EXPORT_MAX`, static_asserted against the party and box sizes.
 - A farewell now falls through party -> box, and only a full party AND a full
   box makes the player choose who to replace. That is what the box is for.
 

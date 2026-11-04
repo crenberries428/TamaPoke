@@ -69,6 +69,15 @@ void Party::begin() {
         memcpy(box, tmp, sizeof(box));
       free(tmp);
     }
+  } else if (boxStored && boxStored < sizeof(box) &&
+             boxStored % sizeof(PartyMon) == 0) {
+    // A build with FEWER box slots (18 before v3.30). The box key has only ever
+    // been written at today's stride -- moves[] was appended to PartyMon before
+    // the box existed -- so a shorter blob is a prefix of ours: read it into the
+    // front and leave the new slots empty. Without this branch growing the box
+    // silently emptied every player's existing one.
+    prefs.getBytes("box", box, boxStored);
+    boxSave();   // rewrite at the new size so this only happens once
   }
   for (auto &s : box) {
     if (s.dex < 1 || s.dex > DEX_COUNT) s.dex = 0;

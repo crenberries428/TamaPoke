@@ -14,7 +14,10 @@
 // and the length-based migration in begin() cannot tell a stride change from a
 // slot-count change, so an existing party would be read back misaligned. A new
 // key is purely additive and cannot corrupt anything.
-#define BOX_SLOTS 18
+// 120 slots is a 3600-byte blob: under the ~4000-byte single-page NVS limit, and
+// NVS rewrites a blob before erasing the old copy, so a save briefly needs twice
+// that free. Going much higher means splitting the key or moving to the SD card.
+#define BOX_SLOTS 120
 #define MOVE_SLOTS 4    // the same four every trainer gets in the real games
 
 // A retired pet. Its level is frozen at the moment it joined; it does not keep

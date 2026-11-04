@@ -30,6 +30,24 @@ int main(){
   ck(kept, "a pre-box save keeps its whole party");
   ck(p.boxCount()==0, "and comes up with an empty box, not garbage");
 
+  // a box written when it had 18 slots must survive the box growing
+  { Preferences seed; seed.begin("tamapoke", false);
+    PartyMon old[18];
+    for (int i=0;i<18;i++) old[i]=mk(1+i*7, 10+i);
+    seed.putBytes("box", old, sizeof(old));
+    seed.end(); }
+  { Party g; g.begin();
+    bool same = true;
+    for (int i=0;i<18;i++) if (g.box[i].dex != 1+i*7 || g.box[i].level != 10+i) same=false;
+    ck(same, "an 18-slot box keeps every creature after the box grows");
+    ck(g.boxCount()==18, "and the new slots come up empty");
+    Preferences chk; chk.begin("tamapoke", true);
+    ck(chk.getBytesLength("box")==sizeof(g.box), "and is rewritten at the new size once");
+    chk.end();
+    for (int i=0;i<BOX_SLOTS;i++) g.box[i]=PartyMon();
+    g.boxSave(); }
+  p.begin();
+
   // deposit: party slot 0 <-> empty box slot 0
   int16_t was = p.slots[0].dex;
   p.swapPartyBox(0, 0);

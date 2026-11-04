@@ -1,4 +1,5 @@
 #include "save.h"
+#include "party.h"
 #include <Arduino.h>
 #include <Preferences.h>
 #include <string.h>
@@ -42,7 +43,11 @@ const SaveField SAVE_FIELDS[] = {
 };
 const uint16_t SAVE_FIELD_COUNT = sizeof(SAVE_FIELDS) / sizeof(SAVE_FIELDS[0]);
 
-#define MAX_VAL 768        // the box is the largest, at 18 records
+// The largest value is the box blob. Derived, not restated: at a fixed 768 the
+// 120-slot box exceeded it and readField() skipped the box as if it were absent.
+#define MAX_VAL (sizeof(PartyMon) * BOX_SLOTS)
+static_assert(sizeof(PartyMon) * (BOX_SLOTS + PARTY_SLOTS) + 1536 <= SAVE_EXPORT_MAX,
+              "SAVE_EXPORT_MAX no longer holds a full party and box");
 
 static uint16_t crc16(const uint8_t *p, size_t n) {
   uint16_t c = 0xFFFF;
@@ -116,7 +121,7 @@ size_t saveExportSize() {
   size_t n = SAVE_HDR + 2;
   for (uint16_t i = 0; i < SAVE_FIELD_COUNT; i++)
     n += 1 + strlen(SAVE_FIELDS[i].key) + 1 + 2 + MAX_VAL / 16;
-  return n + 1024;                   // the two big blobs
+  return n + MAX_VAL + sizeof(PartyMon) * PARTY_SLOTS;   // the two big blobs
 }
 
 size_t saveExport(uint8_t *out, size_t cap) {
@@ -125,7 +130,7 @@ size_t saveExport(uint8_t *out, size_t cap) {
   p.begin("tamapoke", true);
   size_t at = SAVE_HDR;
   uint16_t count = 0;
-  uint8_t val[MAX_VAL];
+  static uint8_t val[MAX_VAL];   // 3.6 KB: too big for the loop task's stack
   for (uint16_t i = 0; i < SAVE_FIELD_COUNT; i++) {
     const SaveField &f = SAVE_FIELDS[i];
     int n = readField(p, f, val);

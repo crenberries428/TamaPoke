@@ -185,6 +185,10 @@ uint8_t boxDetail = 0;        // box slot + 1 whose sheet is open
 // already say which.
 bool releaseConfirm = false;
 #define BOX_PER_PAGE 6
+// Box slots are indexed with uint8_t, and pages are whole: a partial last page
+// would be unreachable by the page count below.
+static_assert(BOX_SLOTS <= 255 && BOX_SLOTS % BOX_PER_PAGE == 0,
+              "box slot index or paging no longer fits");
 uint32_t partyBannerUntil = 0;   // "<name> joined the party!"
 char partyBannerName[14] = "";
 #define PARTY_CELL_W 150
@@ -1212,8 +1216,10 @@ void handleSerial() {
     // Prints the whole save as a block of IMPORT commands. Pasting that block
     // back is the restore -- there is no separate format to get wrong, and no
     // single 2000-character line for a terminal to mangle.
-    static uint8_t buf[2048];
-    size_t n = saveExport(buf, sizeof(buf));
+    // Allocated on first use rather than as a global: 6 KB of internal RAM held
+    // forever for a command that is run once in a while.
+    static uint8_t *buf = (uint8_t *)malloc(SAVE_EXPORT_MAX);
+    size_t n = buf ? saveExport(buf, SAVE_EXPORT_MAX) : 0;
     if (!n) { Serial.println("EXPORT FAIL"); return; }
     Serial.printf("# TamaPoke save, %u bytes. Paste this whole block back.\n",
                   (unsigned)n);
@@ -1226,14 +1232,15 @@ void handleSerial() {
   } else if (line.startsWith("IMPORT")) {
     // IMPORT <hex>   append a chunk
     // IMPORT         commit what has been appended
-    static uint8_t in[2048];
+    static uint8_t *in = (uint8_t *)malloc(SAVE_EXPORT_MAX);
     static size_t inN = 0;
+    if (!in) { Serial.println("IMPORT NOMEM"); return; }
     String hex = line.substring(6);
     hex.trim();
     if (hex.length()) {
       if (hex.length() & 1) { Serial.println("IMPORT ODD"); inN = 0; return; }
       for (size_t i = 0; i + 1 < (size_t)hex.length(); i += 2) {
-        if (inN >= sizeof(in)) { Serial.println("IMPORT FULL"); inN = 0; return; }
+        if (inN >= SAVE_EXPORT_MAX) { Serial.println("IMPORT FULL"); inN = 0; return; }
         auto nyb = [](char c) -> int {
           if (c >= '0' && c <= '9') return c - '0';
           if (c >= 'A' && c <= 'F') return c - 'A' + 10;
@@ -7632,12 +7639,11 @@ void renderBox() {
     snprintf(l, sizeof(l), "Lv.%u%s", (unsigned)m.level, m.shiny ? " *" : "");
     uiText(UIF_TINY, x + 56, y + 52, l, m.shiny ? UI_BAR_WARN : UI_INK, 0);
   }
-  uint8_t pages = BOX_SLOTS / BOX_PER_PAGE;
-  for (uint8_t i = 0; i < pages; i++) {
-    int dx = CX - (pages - 1) * 13 + i * 26;
-    if (i == boxPage) gfx->fillCircle(dx, 366, 5, UI_INK);
-    else gfx->drawCircle(dx, 366, 4, UI_INK);
-  }
+  // A page number, not a dot row: 20 dots at 26 px do not fit the round panel.
+  char pg[12];
+  snprintf(pg, sizeof(pg), "%u/%u", (unsigned)boxPage + 1,
+           (unsigned)(BOX_SLOTS / BOX_PER_PAGE));
+  uiText(UIF_SMALL, CX, 372, pg, UI_INK, 1);
   uiText(UIF_SMALL, CX, 406, T(S_BACK), UI_TRACK_TEXT, 1);
   gfx->flush();
 }

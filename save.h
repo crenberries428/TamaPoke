@@ -47,3 +47,7 @@ bool saveImport(const uint8_t *in, size_t n);
 
 // Roughly what saveExport needs, for sizing a buffer.
 size_t saveExportSize();
+
+// A buffer this big holds any export. save.cpp static_asserts it against the
+// party and box sizes, so growing either fails the build instead of EXPORT.
+#define SAVE_EXPORT_MAX 6144
